@@ -55,7 +55,7 @@ Containing site-specific SLURM directives, for example:
 ### Setup benchmarking directories
 
 ```bash
-cp2k-qmmm-benchmark setup   --cores 1-8,10-16%2,20-32%4   --mem-per-cpu 2000MB
+cp2k-benchmark setup   --cores 1-8,10-16%2,20-32%4   --mem-per-cpu 2000MB
 ```
 
 This expands to:
@@ -69,7 +69,7 @@ This expands to:
 ### Submit jobs
 
 ```bash
-cd CP2K_QMMM_Benchmarking
+cd CP2K_Benchmarking
 sbatch submit_array.sl
 ```
 

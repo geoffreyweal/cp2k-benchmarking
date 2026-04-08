@@ -9,6 +9,10 @@ def main():
 
     command = sys.argv[1]
 
+    # IMPORTANT:
+    # remove the subcommand so argparse doesn't see it
+    sys.argv = [sys.argv[0]] + sys.argv[2:]
+
     if command == "setup":
         setup.run()
     elif command == "report":
