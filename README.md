@@ -10,7 +10,7 @@ Inspired by:
 ## Installation
 
 ```bash
-pip install git+https://github.com/geoffreyweal/cp2k-qmmm-benchmarking
+pip install git+https://github.com/geoffreyweal/cp2k-benchmarking
 ```
 
 ---

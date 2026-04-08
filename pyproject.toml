@@ -3,7 +3,7 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cp2k-qmmm-benchmarking"
+name = "cp2k-benchmarking"
 version = "0.1.0"
 description = "CP2K QM/MM benchmarking infrastructure using SLURM job arrays"
 readme = "README.md"
@@ -20,4 +20,4 @@ classifiers = [
 ]
 
 [project.scripts]
-cp2k-qmmm-benchmark = "cp2k_qmmm_benchmarking.cli:init"
+cp2k-benchmark = "cp2k_benchmarking.cli:init"
