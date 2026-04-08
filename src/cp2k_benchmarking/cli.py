@@ -3,20 +3,28 @@ from cp2k_benchmarking import setup, report
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: cp2k-benchmark <setup|report>")
+    if len(sys.argv) < 3:
+        print(
+            "Usage:\n"
+            "  cp2k_benchmarking qmmm setup [options]\n"
+            "  cp2k_benchmarking qmmm report"
+        )
         sys.exit(1)
 
-    command = sys.argv[1]
+    domain = sys.argv[1]    # e.g. qmmm
+    command = sys.argv[2]   # e.g. setup, report
 
-    # IMPORTANT:
-    # remove the subcommand so argparse doesn't see it
-    sys.argv = [sys.argv[0]] + sys.argv[2:]
+    # Strip program name + domain + command
+    sys.argv = [sys.argv[0]] + sys.argv[3:]
 
-    if command == "setup":
-        setup.run()
-    elif command == "report":
-        report.run()
+    if domain == "qmmm":
+        if command == "setup":
+            setup.run()
+        elif command == "report":
+            report.run()
+        else:
+            print(f"Unknown qmmm command: {command}")
+            sys.exit(1)
     else:
-        print(f"Unknown command: {command}")
+        print(f"Unknown domain: {domain}")
         sys.exit(1)
