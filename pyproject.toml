@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cp2k-qmmm-benchmarking"
+version = "0.1.0"
+description = "CP2K QM/MM benchmarking infrastructure using SLURM job arrays"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+  {name = "Geoffrey Weal", email = "geoffrey.weal@reannz.co.nz"}
+]
+keywords = ["cp2k", "slurm", "hpc", "benchmarking", "chemistry"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent"
+]
+
+[project.scripts]
+cp2k-qmmm-benchmark = "cp2k_qmmm_benchmarking.cli:init"
