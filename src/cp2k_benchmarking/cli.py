@@ -1,5 +1,5 @@
 import sys
-from cp2k_benchmarking import setup, report
+from cp2k_benchmarking.qmmm import setup, report
 
 
 def main():
@@ -11,8 +11,8 @@ def main():
         )
         sys.exit(1)
 
-    domain = sys.argv[1]    # e.g. qmmm
-    command = sys.argv[2]   # e.g. setup, report
+    domain = sys.argv[1]    # qmmm (later: md, periodic, etc.)
+    command = sys.argv[2]   # setup / report
 
     # Strip program name + domain + command
     sys.argv = [sys.argv[0]] + sys.argv[3:]
