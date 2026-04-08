@@ -121,7 +121,7 @@ def run():
     submit_array.write_text(f"""#!/bin/bash
 {include_text}
 
-#SBATCH --job-name=cp2k_qmmm
+#SBATCH --job-name=cp2k_qmmm_benchmarking
 #SBATCH --mem-per-cpu={mem_per_cpu}
 #SBATCH --array={array_list}
 #SBATCH --output=slurm_%A_%a.out
