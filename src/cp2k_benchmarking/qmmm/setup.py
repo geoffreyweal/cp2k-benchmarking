@@ -131,7 +131,7 @@ set -e
 
 NTASKS=$SLURM_ARRAY_TASK_ID
 
-cd CP2K_Benchmarking/${{NTASKS}}cores
+cd ${{NTASKS}}cores
 bash run_nvt.sh
 """)
 
