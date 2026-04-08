@@ -63,8 +63,10 @@ def run():
 
     ntasks_list = parse_cores(args.cores)
     mem_per_cpu = args.mem_per_cpu
+    max_ntasks = max(ntasks_list)
 
     print(f"Benchmarking cores: {ntasks_list}")
+    print(f"Maximum ntasks:     {max_ntasks}")
     print(f"Memory per CPU:     {mem_per_cpu}")
 
     # Paths
@@ -86,12 +88,11 @@ def run():
         )
 
     include_text = include_file.read_text().strip()
-
     benchmark_root.mkdir(exist_ok=True)
 
-    # -----------------------------------
+    # -------------------------------------------------
     # Create per-core benchmark directories
-    # -----------------------------------
+    # -------------------------------------------------
 
     for ntasks in ntasks_list:
         core_dir = benchmark_root / f"{ntasks}cores"
@@ -101,7 +102,7 @@ def run():
 
         core_dir.mkdir(parents=True)
 
-        # Copy *contents* of CP2K_Files into XXXcores/
+        # Copy contents of CP2K_Files into XXXcores
         for item in source_cp2k_files.iterdir():
             dest = core_dir / item.name
             if item.is_dir():
@@ -111,9 +112,9 @@ def run():
 
         print(f"Prepared: {core_dir}")
 
-    # -----------------------------------
+    # -------------------------------------------------
     # Write SLURM job array script
-    # -----------------------------------
+    # -------------------------------------------------
 
     array_list = ",".join(str(n) for n in ntasks_list)
     submit_array = benchmark_root / "submit_array.sl"
@@ -122,6 +123,7 @@ def run():
 {include_text}
 
 #SBATCH --job-name=cp2k_qmmm_benchmarking
+#SBATCH --ntasks={max_ntasks}
 #SBATCH --mem-per-cpu={mem_per_cpu}
 #SBATCH --array={array_list}
 #SBATCH --output=slurm_%A_%a.out
@@ -131,7 +133,9 @@ set -e
 
 NTASKS=$SLURM_ARRAY_TASK_ID
 
+cd CP2K_Benchmarking
 cd ${{NTASKS}}cores
+
 bash run_nvt.sh
 """)
 
