@@ -8,19 +8,23 @@ def parse_cores(core_string: str) -> list:
     """
     Parse a core specification string.
 
-    Example:
-      1-8,10-16%2,20-32%4
-      -> [1,2,3,4,5,6,7,8,10,12,14,16,20,24,28,32]
+    Examples
+    --------
+    1-8             -> [1,2,3,4,5,6,7,8]
+    10-16%2         -> [10,12,14,16]
+    1-8,10-16%2     -> [1,2,3,4,5,6,7,8,10,12,14,16]
     """
     cores = set()
 
     for block in core_string.split(","):
         block = block.strip()
 
+        # Single value
         if "-" not in block:
             cores.add(int(block))
             continue
 
+        # Range or stepped range
         if "%" in block:
             range_part, step_part = block.split("%")
             step = int(step_part)
@@ -63,10 +67,12 @@ def run():
     print(f"Benchmarking cores: {ntasks_list}")
     print(f"Memory per CPU:     {mem_per_cpu}")
 
+    # Paths
     source_cp2k_files = Path("CP2K_Files")
-    benchmark_root = Path("CP2K_QMMM_Benchmarking")
+    benchmark_root = Path("CP2K_Benchmarking")
     include_file = Path("cp2k_benchmarking_submit_include.txt")
 
+    # Sanity checks
     if not source_cp2k_files.is_dir():
         raise RuntimeError(
             "CP2K_Files directory not found.\n"
@@ -83,9 +89,9 @@ def run():
 
     benchmark_root.mkdir(exist_ok=True)
 
-    # -------------------------
-    # Create per-core directories
-    # -------------------------
+    # -----------------------------------
+    # Create per-core benchmark directories
+    # -----------------------------------
 
     for ntasks in ntasks_list:
         core_dir = benchmark_root / f"{ntasks}cores"
@@ -95,6 +101,7 @@ def run():
 
         core_dir.mkdir(parents=True)
 
+        # Copy *contents* of CP2K_Files into XXXcores/
         for item in source_cp2k_files.iterdir():
             dest = core_dir / item.name
             if item.is_dir():
@@ -104,11 +111,11 @@ def run():
 
         print(f"Prepared: {core_dir}")
 
-    # -------------------------
-    # Write SLURM array script
-    # -------------------------
+    # -----------------------------------
+    # Write SLURM job array script
+    # -----------------------------------
 
-    bash_ntasks = " ".join(str(n) for n in ntasks_list)
+    array_list = ",".join(str(n) for n in ntasks_list)
     submit_array = benchmark_root / "submit_array.sl"
 
     submit_array.write_text(f"""#!/bin/bash
@@ -116,22 +123,21 @@ def run():
 
 #SBATCH --job-name=cp2k_qmmm
 #SBATCH --mem-per-cpu={mem_per_cpu}
-#SBATCH --array=1-{len(ntasks_list)}
+#SBATCH --array={array_list}
 #SBATCH --output=slurm_%A_%a.out
 #SBATCH --error=slurm_%A_%a.err
 
 set -e
 
-NTASKS_LIST=({bash_ntasks})
-NTASKS=${{NTASKS_LIST[$SLURM_ARRAY_TASK_ID-1]}}
+NTASKS=$SLURM_ARRAY_TASK_ID
 
-cd CP2K_QMMM_Benchmarking/${{NTASKS}}cores
+cd CP2K_Benchmarking/${{NTASKS}}cores
 bash run_nvt.sh
 """)
 
     os.chmod(submit_array, 0o755)
 
     print("\nSetup complete.")
-    print("Submit with:")
-    print("  cd CP2K_QMMM_Benchmarking")
+    print("Submit benchmarks with:")
+    print("  cd CP2K_Benchmarking")
     print("  sbatch submit_array.sl")
