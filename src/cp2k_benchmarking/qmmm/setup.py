@@ -5,6 +5,16 @@ from pathlib import Path
 
 
 def parse_cores(core_string: str) -> list:
+    """
+    Parse a core specification string.
+
+    Examples
+    --------
+    8                    -> [8]
+    1-8                  -> [1,2,3,4,5,6,7,8]
+    10-16%2              -> [10,12,14,16]
+    1-8,10-16%2          -> [1,2,3,4,5,6,7,8,10,12,14,16]
+    """
     cores = set()
 
     for block in core_string.split(","):
@@ -31,13 +41,17 @@ def parse_cores(core_string: str) -> list:
     return sorted(cores)
 
 
-def mpi_omp_permutations(total_cores: int):
-    perms = []
+def mpi_openmp_permutations(total_cores: int):
+    """
+    Generate all (ntasks, cpus-per-task) permutations
+    such that ntasks * cpus-per-task = total_cores.
+    """
+    permutations = []
     for ntasks in range(1, total_cores + 1):
         if total_cores % ntasks == 0:
             omp = total_cores // ntasks
-            perms.append((ntasks, omp))
-    return perms
+            permutations.append((ntasks, omp))
+    return permutations
 
 
 def run():
@@ -48,7 +62,7 @@ def run():
     parser.add_argument(
         "--cores",
         required=True,
-        help="Core specification, e.g. 8,12,16 or 1-32%2",
+        help="Core specification, e.g. 8, 1-32%2, or 8,16,32",
     )
 
     args = parser.parse_args()
@@ -64,25 +78,30 @@ def run():
 
     if not job_body_file.is_file():
         raise RuntimeError(
-            "Missing cp2k_benchmarking_submit_include.txt "
-            "(this must contain the job body)."
+            "Missing cp2k_benchmarking_submit_include.txt\n"
+            "This file must contain the full job body."
         )
 
     job_body = job_body_file.read_text().strip()
     benchmark_root.mkdir(exist_ok=True)
 
-    print("Generating MPI/OpenMP permutations:\n")
+    print("Generating MPI/OpenMP benchmarking permutations:\n")
 
-    for cores in core_list:
-        perms = mpi_omp_permutations(cores)
+    for total_cores in core_list:
+        permutations = mpi_openmp_permutations(total_cores)
 
-        for ntasks, omp in perms:
-            dirname = benchmark_root / f"{cores}C_{ntasks}M_{omp}T"
+        for ntasks, omp in permutations:
+            dirname = (
+                benchmark_root
+                / f"{total_cores}_Cores_{ntasks}_MPI_{omp}_OpenMPI"
+            )
 
             if dirname.exists():
                 shutil.rmtree(dirname)
+
             dirname.mkdir(parents=True)
 
+            # Copy CP2K input files
             for item in source_cp2k_files.iterdir():
                 dest = dirname / item.name
                 if item.is_dir():
@@ -94,20 +113,18 @@ def run():
 
             submit_file.write_text(f"""#!/bin/bash -e
 
-#SBATCH --job-name=cp2k_qmmm_{cores}C_{ntasks}M_{omp}T
+#SBATCH --job-name=cp2k_qmmm_{total_cores}C_{ntasks}MPI_{omp}OMP
 #SBATCH --ntasks={ntasks}
 #SBATCH --cpus-per-task={omp}
 #SBATCH --output=slurm_%j.out
 #SBATCH --error=slurm_%j.err
-
-export OMP_NUM_THREADS={omp}
 
 {job_body}
 """)
 
             os.chmod(submit_file, 0o755)
 
-            print(f"  {dirname.name}")
+            print(f"  created {dirname.name}")
 
     print("\nSetup complete.")
-    print("One submit.sl created per MPI/OpenMP configuration.")
+    print("One submit.sl file has been created per MPI/OpenMP configuration.")
