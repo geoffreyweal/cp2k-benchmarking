@@ -40,36 +40,50 @@ def mpi_openmp_permutations(total_cores: int):
 
 
 def parse_mem_value(mem_str: str) -> float:
-    """
-    Extract numeric value from SLURM memory strings like:
-    16G, 2000M, 2.5G
-    """
     return float("".join(c for c in mem_str if c.isdigit() or c == "."))
+
+
+def parse_time_policy(policy: str):
+    """
+    Parse time policy of the form:
+
+      30:00,15:00,10:00->16,64,128
+
+    Returns:
+      [(30:00, 16), (15:00, 64), (10:00, 128)]
+    """
+    times_part, cores_part = policy.split("->")
+
+    times = [t.strip() for t in times_part.split(",")]
+    cores = [int(c.strip()) for c in cores_part.split(",")]
+
+    if len(times) != len(cores):
+        raise ValueError(
+            "Time policy error: number of times must match number of core thresholds"
+        )
+
+    return list(zip(times, cores))
+
+
+def select_time(total_cores: int, time_policy):
+    for time_str, max_cores in time_policy:
+        if total_cores <= max_cores:
+            return time_str
+    raise RuntimeError(
+        f"No time defined for total cores = {total_cores}"
+    )
 
 
 def run():
     parser = argparse.ArgumentParser(
         description="Set up CP2K QM/MM benchmarking directories "
-                    "(MPI/OpenMP permutations with memory policy)"
+                    "(MPI/OpenMP permutations with memory and time policies)"
     )
 
-    parser.add_argument(
-        "--cores",
-        required=True,
-        help="Core specification, e.g. 8, 1-32%2, or 8,16,32",
-    )
-
-    parser.add_argument(
-        "--mem",
-        required=True,
-        help="Minimum total memory per job, e.g. 16G",
-    )
-
-    parser.add_argument(
-        "--mem-per-cpu",
-        required=True,
-        help="Memory per CPU, e.g. 2G",
-    )
+    parser.add_argument("--cores", required=True)
+    parser.add_argument("--mem", required=True)
+    parser.add_argument("--mem-per-cpu", required=True)
+    parser.add_argument("--time-policy", required=True)
 
     args = parser.parse_args()
 
@@ -77,9 +91,10 @@ def run():
 
     mem_floor = args.mem
     mem_per_cpu = args.mem_per_cpu
-
     mem_floor_val = parse_mem_value(mem_floor)
     mem_per_cpu_val = parse_mem_value(mem_per_cpu)
+
+    time_policy = parse_time_policy(args.time_policy)
 
     source_cp2k_files = Path("CP2K_Files")
     benchmark_root = Path("CP2K_Benchmarking")
@@ -89,17 +104,10 @@ def run():
         raise RuntimeError("CP2K_Files directory not found.")
 
     if not job_body_file.is_file():
-        raise RuntimeError(
-            "Missing cp2k_benchmarking_submit_include.txt "
-            "(this must contain the full job body)."
-        )
+        raise RuntimeError("Missing cp2k_benchmarking_submit_include.txt")
 
     job_body = job_body_file.read_text().strip()
     benchmark_root.mkdir(exist_ok=True)
-
-    # -------------------------------------------------
-    # Precompute all jobs
-    # -------------------------------------------------
 
     jobs = []
     for total_cores in core_list:
@@ -107,10 +115,6 @@ def run():
             jobs.append((total_cores, ntasks, omp))
 
     print(f"\nGenerating {len(jobs)} benchmark configurations\n")
-
-    # -------------------------------------------------
-    # Create jobs with global progress
-    # -------------------------------------------------
 
     with tqdm(total=len(jobs), desc="Creating benchmark configurations") as pbar:
         for total_cores, ntasks, omp in jobs:
@@ -121,10 +125,8 @@ def run():
 
             if dirname.exists():
                 shutil.rmtree(dirname)
-
             dirname.mkdir(parents=True)
 
-            # Copy CP2K input files
             for item in source_cp2k_files.iterdir():
                 dest = dirname / item.name
                 if item.is_dir():
@@ -132,16 +134,14 @@ def run():
                 else:
                     shutil.copy2(item, dest)
 
-            # -------------------------
-            # Memory decision
-            # -------------------------
-
-            requested_total_mem = total_cores * mem_per_cpu_val
-
-            if requested_total_mem > mem_floor_val:
+            # Memory policy
+            if total_cores * mem_per_cpu_val > mem_floor_val:
                 mem_line = f"#SBATCH --mem-per-cpu={mem_per_cpu}"
             else:
                 mem_line = f"#SBATCH --mem={mem_floor}"
+
+            # Time policy
+            time_value = select_time(total_cores, time_policy)
 
             submit_file = dirname / "submit.sl"
 
@@ -150,6 +150,7 @@ def run():
 #SBATCH --job-name=cp2k_qmmm_{total_cores}C_{ntasks}MPI_{omp}OMP
 #SBATCH --ntasks={ntasks}
 #SBATCH --cpus-per-task={omp}
+#SBATCH --time={time_value}
 {mem_line}
 #SBATCH --output=slurm_%j.out
 #SBATCH --error=slurm_%j.err
@@ -161,6 +162,4 @@ def run():
             pbar.update(1)
 
     print("\nSetup complete.")
-    print("Memory policy applied:")
-    print(f"  Minimum memory      : {mem_floor}")
-    print(f"  Memory per CPU used if cores × mem-per-cpu > mem")
+    print("Time policy applied successfully.")
