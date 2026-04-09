@@ -218,4 +218,3 @@ def run():
     print(f"Total requested walltime across all jobs: "
           f"{format_seconds(total_requested_seconds)} "
           f"({total_requested_seconds:,} seconds)")
-``
