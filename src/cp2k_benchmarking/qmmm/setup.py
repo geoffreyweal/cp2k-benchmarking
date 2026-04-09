@@ -1,5 +1,4 @@
 import argparse
-import os
 import shutil
 from pathlib import Path
 
@@ -10,12 +9,11 @@ def parse_cores(core_string: str) -> list:
     """
     Parse a core specification string.
 
-    Examples
-    --------
-    8                    -> [8]
-    1-8                  -> [1,2,3,4,5,6,7,8]
-    10-16%2              -> [10,12,14,16]
-    1-8,10-16%2          -> [1,2,3,4,5,6,7,8,10,12,14,16]
+    Examples:
+      8                    -> [8]
+      1-8                  -> [1,2,3,4,5,6,7,8]
+      10-16%2              -> [10,12,14,16]
+      1-8,10-16%2          -> [1,2,3,4,5,6,7,8,10,12,14,16]
     """
     cores = set()
 
@@ -34,7 +32,6 @@ def parse_cores(core_string: str) -> list:
             step = 1
 
         start, end = map(int, range_part.split("-"))
-
         for c in range(start, end + 1, step):
             cores.add(c)
 
@@ -43,8 +40,8 @@ def parse_cores(core_string: str) -> list:
 
 def mpi_openmp_permutations(total_cores: int):
     """
-    Generate all (ntasks, cpus-per-task) pairs
-    such that ntasks * cpus-per-task = total_cores.
+    Generate all (MPI ranks, OpenMP threads) pairs
+    such that MPI * OpenMP = total cores.
     """
     return [
         (ntasks, total_cores // ntasks)
@@ -55,9 +52,7 @@ def mpi_openmp_permutations(total_cores: int):
 
 def parse_mem_value(mem_str: str) -> float:
     """
-    Extract numeric value from SLURM memory strings like:
-    16G, 2000M, 2.5G
-
+    Extract numeric value from SLURM memory strings like 128G, 2000M, 2.5G.
     Units are assumed consistent between --mem and --mem-per-cpu.
     """
     return float("".join(c for c in mem_str if c.isdigit() or c == "."))
@@ -98,13 +93,11 @@ def parse_time_policy(policy: str):
 
 def select_time(total_cores: int, times, thresholds) -> str:
     """
-    Select the appropriate walltime for a given core count.
+    Select the appropriate walltime for a given total core count.
     """
     for time_str, max_cores in zip(times, thresholds):
         if total_cores <= max_cores:
             return time_str
-
-    # Fallback (last time in list)
     return times[-1]
 
 
@@ -116,29 +109,10 @@ def run():
         )
     )
 
-    parser.add_argument(
-        "--cores",
-        required=True,
-        help="Core specification, e.g. 8, 1-32%2, or 8,16,32",
-    )
-
-    parser.add_argument(
-        "--mem",
-        required=True,
-        help="Minimum total memory per job, e.g. 16G",
-    )
-
-    parser.add_argument(
-        "--mem-per-cpu",
-        required=True,
-        help="Memory per CPU, e.g. 2G",
-    )
-
-    parser.add_argument(
-        "--time-policy",
-        required=True,
-        help="Time policy, e.g. 30:00,15:00,10:00@16,64",
-    )
+    parser.add_argument("--cores", required=True)
+    parser.add_argument("--mem", required=True)
+    parser.add_argument("--mem-per-cpu", required=True)
+    parser.add_argument("--time-policy", required=True)
 
     args = parser.parse_args()
 
@@ -155,26 +129,36 @@ def run():
     benchmark_root = Path("CP2K_Benchmarking")
     job_body_file = Path("cp2k_benchmarking_submit_include.txt")
 
-    # -------------------------
-    # Sanity checks
-    # -------------------------
-
     if not source_cp2k_files.is_dir():
         raise RuntimeError("CP2K_Files directory not found.")
 
     if not job_body_file.is_file():
         raise RuntimeError(
-            "Missing cp2k_benchmarking_submit_include.txt\n"
-            "This file must contain the full job body."
+            "Missing cp2k_benchmarking_submit_include.txt"
         )
 
     job_body = job_body_file.read_text().strip()
+
+    # -------------------------------------------------
+    # SAFETY CHECK: memory directives must NOT be here
+    # -------------------------------------------------
+    for forbidden in ("--mem=", "--mem-per-cpu=", "--mem-per-gpu="):
+        if forbidden in job_body:
+            print(
+                "\nWARNING:\n"
+                "Memory directives were found in "
+                "cp2k_benchmarking_submit_include.txt.\n"
+                "These will OVERRIDE the memory policy defined in setup.py.\n"
+                "Please remove all --mem*, --mem-per-cpu*, and --mem-per-gpu*\n"
+                "directives from the include file.\n"
+            )
+            break
+
     benchmark_root.mkdir(exist_ok=True)
 
-    # -------------------------
-    # Precompute all jobs
-    # -------------------------
-
+    # -------------------------------------------------
+    # Precompute all benchmark jobs
+    # -------------------------------------------------
     jobs = []
     for total_cores in core_list:
         for ntasks, omp in mpi_openmp_permutations(total_cores):
@@ -182,10 +166,9 @@ def run():
 
     print(f"\nGenerating {len(jobs)} benchmark configurations\n")
 
-    # -------------------------
-    # Generate directories
-    # -------------------------
-
+    # -------------------------------------------------
+    # Create directories + submit.sl files
+    # -------------------------------------------------
     with tqdm(total=len(jobs), desc="Creating benchmark configurations") as pbar:
         for total_cores, ntasks, omp in jobs:
             dirname = (
@@ -198,7 +181,6 @@ def run():
 
             dirname.mkdir(parents=True)
 
-            # Copy CP2K input files
             for item in source_cp2k_files.iterdir():
                 dest = dirname / item.name
                 if item.is_dir():
@@ -209,7 +191,6 @@ def run():
             # -------------------------
             # Memory policy
             # -------------------------
-
             if total_cores * mem_per_cpu_val > mem_floor_val:
                 mem_line = f"#SBATCH --mem-per-cpu={mem_per_cpu}"
             else:
@@ -218,12 +199,7 @@ def run():
             # -------------------------
             # Time policy
             # -------------------------
-
             time_value = select_time(total_cores, times, thresholds)
-
-            # -------------------------
-            # Write submit.sl
-            # -------------------------
 
             submit_file = dirname / "submit.sl"
 
@@ -240,8 +216,7 @@ def run():
 {job_body}
 """)
 
-            os.chmod(submit_file, 0o755)
             pbar.update(1)
 
     print("\nSetup complete.")
-    print("Memory and time policies applied successfully.")
+    print("Memory and time policies applied correctly.")
