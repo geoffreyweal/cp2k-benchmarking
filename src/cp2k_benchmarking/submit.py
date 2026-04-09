@@ -119,4 +119,3 @@ def run():
         print("\nThe following submissions failed:")
         for s in failed:
             print(f"  {s}")
-``
