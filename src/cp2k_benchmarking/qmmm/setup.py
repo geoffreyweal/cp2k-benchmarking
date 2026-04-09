@@ -41,7 +41,7 @@ def parse_cores(core_string: str) -> list:
 def mpi_openmp_permutations(total_cores: int):
     """
     Generate all (MPI ranks, OpenMP threads) pairs
-    such that MPI * OpenMP = total cores.
+    such that MPI * OpenMP = total_cores.
     """
     return [
         (ntasks, total_cores // ntasks)
@@ -52,10 +52,30 @@ def mpi_openmp_permutations(total_cores: int):
 
 def parse_mem_value(mem_str: str) -> float:
     """
-    Extract numeric value from SLURM memory strings like 128G, 2000M, 2.5G.
-    Units are assumed consistent between --mem and --mem-per-cpu.
+    Convert SLURM memory strings to MB.
+
+    Examples:
+      128G   -> 131072
+      2.5G   -> 2560
+      2000M  -> 2000
+      2000MB -> 2000
+
+    Units must be M/MB or G/GB.
     """
-    return float("".join(c for c in mem_str if c.isdigit() or c == "."))
+    mem_str = mem_str.strip().upper()
+
+    if mem_str.endswith("GB") or mem_str.endswith("G"):
+        value = float(mem_str.rstrip("GB").rstrip("G"))
+        return value * 1024
+
+    if mem_str.endswith("MB") or mem_str.endswith("M"):
+        value = float(mem_str.rstrip("MB").rstrip("M"))
+        return value
+
+    raise ValueError(
+        f"Unrecognised memory format: {mem_str}. "
+        "Please use M/MB or G/GB."
+    )
 
 
 def parse_time_policy(policy: str):
@@ -93,7 +113,7 @@ def parse_time_policy(policy: str):
 
 def select_time(total_cores: int, times, thresholds) -> str:
     """
-    Select the appropriate walltime for a given total core count.
+    Select walltime based on total core count.
     """
     for time_str, max_cores in zip(times, thresholds):
         if total_cores <= max_cores:
@@ -118,11 +138,14 @@ def run():
 
     core_list = parse_cores(args.cores)
 
+    # -------- Memory handling (unit-normalised to MB) --------
     mem_floor = args.mem
     mem_per_cpu = args.mem_per_cpu
+
     mem_floor_val = parse_mem_value(mem_floor)
     mem_per_cpu_val = parse_mem_value(mem_per_cpu)
 
+    # -------- Time policy --------
     times, thresholds = parse_time_policy(args.time_policy)
 
     source_cp2k_files = Path("CP2K_Files")
@@ -139,9 +162,7 @@ def run():
 
     job_body = job_body_file.read_text().strip()
 
-    # -------------------------------------------------
-    # SAFETY CHECK: memory directives must NOT be here
-    # -------------------------------------------------
+    # -------- Safety check: memory directives must not be overridden --------
     for forbidden in ("--mem=", "--mem-per-cpu=", "--mem-per-gpu="):
         if forbidden in job_body:
             print(
@@ -156,9 +177,7 @@ def run():
 
     benchmark_root.mkdir(exist_ok=True)
 
-    # -------------------------------------------------
-    # Precompute all benchmark jobs
-    # -------------------------------------------------
+    # -------- Precompute all benchmark jobs --------
     jobs = []
     for total_cores in core_list:
         for ntasks, omp in mpi_openmp_permutations(total_cores):
@@ -166,9 +185,7 @@ def run():
 
     print(f"\nGenerating {len(jobs)} benchmark configurations\n")
 
-    # -------------------------------------------------
-    # Create directories + submit.sl files
-    # -------------------------------------------------
+    # -------- Generate directories and submit scripts --------
     with tqdm(total=len(jobs), desc="Creating benchmark configurations") as pbar:
         for total_cores, ntasks, omp in jobs:
             dirname = (
@@ -188,18 +205,13 @@ def run():
                 else:
                     shutil.copy2(item, dest)
 
-            # -------------------------
-            # Memory policy
-            # -------------------------
-            import pdb; pdb.set_trace()
+            # -------- Memory policy --------
             if total_cores * mem_per_cpu_val > mem_floor_val:
                 mem_line = f"#SBATCH --mem-per-cpu={mem_per_cpu}"
             else:
                 mem_line = f"#SBATCH --mem={mem_floor}"
 
-            # -------------------------
-            # Time policy
-            # -------------------------
+            # -------- Time policy --------
             time_value = select_time(total_cores, times, thresholds)
 
             submit_file = dirname / "submit.sl"
