@@ -44,7 +44,7 @@ def parse_cores(core_string: str) -> list:
 
 def run():
     parser = argparse.ArgumentParser(
-        description="Set up CP2K QM/MM benchmarking directories"
+        description="Set up CP2K QM/MM benchmarking directories (individual SLURM jobs)"
     )
 
     parser.add_argument(
@@ -63,10 +63,8 @@ def run():
 
     ntasks_list = parse_cores(args.cores)
     mem_per_cpu = args.mem_per_cpu
-    max_ntasks = max(ntasks_list)
 
     print(f"Benchmarking cores: {ntasks_list}")
-    print(f"Maximum ntasks:     {max_ntasks}")
     print(f"Memory per CPU:     {mem_per_cpu}")
 
     # Paths
@@ -91,7 +89,7 @@ def run():
     benchmark_root.mkdir(exist_ok=True)
 
     # -------------------------------------------------
-    # Create per-core benchmark directories
+    # Create per-core benchmark directories + submit.sl
     # -------------------------------------------------
 
     for ntasks in ntasks_list:
@@ -112,36 +110,28 @@ def run():
 
         print(f"Prepared: {core_dir}")
 
-    # -------------------------------------------------
-    # Write SLURM job array script
-    # -------------------------------------------------
+        # -------------------------
+        # Write submit.sl
+        # -------------------------
 
-    array_list = ",".join(str(n) for n in ntasks_list)
-    submit_array = benchmark_root / "submit_array.sl"
+        submit_file = core_dir / "submit.sl"
 
-    submit_array.write_text(f"""#!/bin/bash
+        submit_file.write_text(f"""#!/bin/bash -e
 {include_text}
 
-#SBATCH --job-name=cp2k_qmmm_benchmarking
-#SBATCH --ntasks={max_ntasks}
+#SBATCH --job-name=cp2k_qmmm_benchmarking_{ntasks}cores
+#SBATCH --ntasks={ntasks}
 #SBATCH --mem-per-cpu={mem_per_cpu}
-#SBATCH --array={array_list}
-#SBATCH --output=slurm_%A_%a.out
-#SBATCH --error=slurm_%A_%a.err
-
-set -e
-
-NTASKS=$SLURM_ARRAY_TASK_ID
-
-cd CP2K_Benchmarking
-cd ${{NTASKS}}cores
+#SBATCH --output=slurm_%j.out
+#SBATCH --error=slurm_%j.err
 
 bash run_nvt.sh
 """)
 
-    os.chmod(submit_array, 0o755)
+        os.chmod(submit_file, 0o755)
 
     print("\nSetup complete.")
-    print("Submit benchmarks with:")
-    print("  cd CP2K_Benchmarking")
-    print("  sbatch submit_array.sl")
+    print("Individual SLURM jobs created in:")
+    print("  CP2K_Benchmarking/*cores/submit.sl")
+    print("\nJobs can be submitted later with, for example:")
+    print("  for d in CP2K_Benchmarking/*cores; do (cd \"$d\" && sbatch submit.sl); done")
