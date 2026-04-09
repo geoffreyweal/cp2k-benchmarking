@@ -164,4 +164,3 @@ def run():
     print("Memory policy applied:")
     print(f"  Minimum memory      : {mem_floor}")
     print(f"  Memory per CPU used if cores × mem-per-cpu > mem")
-``
