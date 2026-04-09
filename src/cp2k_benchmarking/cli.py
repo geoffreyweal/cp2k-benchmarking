@@ -8,9 +8,9 @@ def main():
     if len(sys.argv) < 2:
         print(
             "Usage:\n"
-            "  cp2k_benchmarking qmmm setup [options]\n"
-            "  cp2k_benchmarking qmmm report\n"
-            "  cp2k_benchmarking submit [options]"
+            "  cp2k-benchmarking qmmm setup [options]\n"
+            "  cp2k-benchmarking qmmm report\n"
+            "  cp2k-benchmarking submit [options]"
         )
         sys.exit(1)
 
@@ -21,7 +21,7 @@ def main():
 
     if command == "qmmm":
         if len(sys.argv) < 2:
-            print("Usage: cp2k_benchmarking qmmm <setup|report>")
+            print("Usage: cp2k-benchmarking qmmm <setup|report>")
             sys.exit(1)
 
         subcommand = sys.argv[1]
