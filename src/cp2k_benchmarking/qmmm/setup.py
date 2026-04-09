@@ -74,6 +74,7 @@ def parse_time_policy(policy: str):
       total_cores <= 64  -> 15:00
       total_cores >  64  -> 10:00
     """
+    import pdb; pdb.set_trace()
     if "->" not in policy:
         raise ValueError(
             "Time policy must be of the form TIMES->THRESHOLDS, "
@@ -86,7 +87,6 @@ def parse_time_policy(policy: str):
     thresholds = [int(c.strip()) for c in thresholds_part.split(",")]
 
     if len(times) != len(thresholds) + 1:
-        import pdb; pdb.set_trace()
         raise ValueError(
             "Time policy error: number of times must be exactly "
             "one more than the number of core thresholds"
