@@ -191,6 +191,7 @@ def run():
             # -------------------------
             # Memory policy
             # -------------------------
+            import pdb; pdb.set_trace()
             if total_cores * mem_per_cpu_val > mem_floor_val:
                 mem_line = f"#SBATCH --mem-per-cpu={mem_per_cpu}"
             else:
