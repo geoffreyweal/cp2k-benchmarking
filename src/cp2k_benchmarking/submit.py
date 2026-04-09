@@ -4,18 +4,72 @@ import time
 from pathlib import Path
 
 
+# -------------------------------------------------
+# Time parsing utilities
+# -------------------------------------------------
+
+def parse_slurm_time_to_seconds(time_str: str) -> int:
+    """
+    Convert SLURM time formats to seconds.
+    Supports:
+      MM:SS
+      HH:MM:SS
+      D-HH:MM:SS
+    """
+    time_str = time_str.strip()
+
+    days = 0
+    if "-" in time_str:
+        d, t = time_str.split("-", 1)
+        days = int(d)
+    else:
+        t = time_str
+
+    parts = list(map(int, t.split(":")))
+
+    if len(parts) == 2:
+        h = 0
+        m, s = parts
+    elif len(parts) == 3:
+        h, m, s = parts
+    else:
+        raise ValueError(f"Invalid SLURM time format: {time_str}")
+
+    return days * 86400 + h * 3600 + m * 60 + s
+
+
+def format_seconds(seconds: int) -> str:
+    days, rem = divmod(seconds, 86400)
+    h, rem = divmod(rem, 3600)
+    m, s = divmod(rem, 60)
+
+    if days > 0:
+        return f"{days}d {h:02d}:{m:02d}:{s:02d}"
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def extract_walltime_from_submit(script: Path) -> int:
+    """
+    Extract #SBATCH --time from submit.sl and return seconds.
+    """
+    for line in script.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("#SBATCH") and "--time=" in line:
+            time_str = line.split("--time=", 1)[1]
+            return parse_slurm_time_to_seconds(time_str)
+
+    raise RuntimeError(f"No --time directive found in {script}")
+
+
+# -------------------------------------------------
+# Submission logic
+# -------------------------------------------------
+
 def find_submit_scripts(root: Path) -> list:
-    """
-    Recursively find all files named 'submit.sl' under root.
-    """
     return sorted(root.rglob("submit.sl"))
 
 
 def submit_script(path: Path, dry_run: bool = False) -> bool:
-    """
-    Submit a single SLURM script using sbatch.
-    Returns True if submission succeeded, False otherwise.
-    """
     if dry_run:
         print(f"[DRY-RUN] sbatch {path}")
         return True
@@ -41,40 +95,14 @@ def submit_script(path: Path, dry_run: bool = False) -> bool:
 
 def run():
     parser = argparse.ArgumentParser(
-        description="Recursively find and submit all submit.sl files to SLURM"
+        description="Submit all submit.sl files and report total walltime"
     )
 
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be submitted without submitting",
-    )
-
-    parser.add_argument(
-        "--yes",
-        action="store_true",
-        help="Do not prompt for confirmation",
-    )
-
-    parser.add_argument(
-        "--root",
-        default=".",
-        help="Root directory to search from (default: current directory)",
-    )
-
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=10,
-        help="Number of jobs to submit before pausing (default: 10)",
-    )
-
-    parser.add_argument(
-        "--pause",
-        type=float,
-        default=1.0,
-        help="Pause duration in seconds after each batch (default: 1.0)",
-    )
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--yes", action="store_true")
+    parser.add_argument("--root", default=".")
+    parser.add_argument("--batch-size", type=int, default=10)
+    parser.add_argument("--pause", type=float, default=1.0)
 
     args = parser.parse_args()
 
@@ -85,17 +113,27 @@ def run():
         print("No submit.sl files found.")
         return
 
-    print(f"Found {len(scripts)} submit.sl files:\n")
+    total_walltime_seconds = 0
+    walltimes = {}
+
     for s in scripts:
-        print(f"  {s}")
+        wt = extract_walltime_from_submit(s)
+        walltimes[s] = wt
+        total_walltime_seconds += wt
+
+    print(f"Found {len(scripts)} submit.sl files")
+    print(
+        f"Total requested walltime: "
+        f"{format_seconds(total_walltime_seconds)} "
+        f"({total_walltime_seconds:,} seconds)\n"
+    )
 
     if not args.yes and not args.dry_run:
-        response = input("\nSubmit all jobs? [y/N] ").strip().lower()
+        response = input("Submit all jobs? [y/N] ").strip().lower()
         if response not in {"y", "yes"}:
             print("Aborted.")
             return
 
-    print("")
     failed = []
 
     for idx, script in enumerate(scripts, start=1):
@@ -103,11 +141,7 @@ def run():
         if not ok:
             failed.append(script)
 
-        # Pause after every batch_size submissions (except at the very end)
-        if (
-            idx % args.batch_size == 0
-            and idx < len(scripts)
-        ):
+        if idx % args.batch_size == 0 and idx < len(scripts):
             print(
                 f"\nSubmitted {idx} jobs — pausing for {args.pause} s...\n"
             )
@@ -116,6 +150,12 @@ def run():
     print("\nSubmission complete.")
 
     if failed:
-        print("\nThe following submissions failed:")
+        print("\nThe following jobs failed to submit:")
         for s in failed:
             print(f"  {s}")
+
+    print(
+        f"\nTotal walltime of submitted jobs: "
+        f"{format_seconds(total_walltime_seconds)} "
+        f"({total_walltime_seconds:,} seconds)"
+    )
