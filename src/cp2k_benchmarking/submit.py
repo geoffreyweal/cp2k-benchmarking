@@ -1,29 +1,42 @@
 import argparse
 import subprocess
+import time
 from pathlib import Path
 
 
-def find_submit_scripts(root: Path) -> list[Path]:
+def find_submit_scripts(root: Path) -> list:
     """
     Recursively find all files named 'submit.sl' under root.
     """
     return sorted(root.rglob("submit.sl"))
 
 
-def submit_script(path: Path, dry_run: bool = False):
+def submit_script(path: Path, dry_run: bool = False) -> bool:
     """
     Submit a single SLURM script using sbatch.
+    Returns True if submission succeeded, False otherwise.
     """
     if dry_run:
         print(f"[DRY-RUN] sbatch {path}")
-        return
+        return True
 
     print(f"Submitting: {path}")
-    subprocess.run(
+
+    result = subprocess.run(
         ["sbatch", path.name],
         cwd=path.parent,
-        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
+
+    if result.returncode != 0:
+        print(f"[FAILED] {path}")
+        print(result.stderr.strip())
+        return False
+
+    print(result.stdout.strip())
+    return True
 
 
 def run():
@@ -49,6 +62,13 @@ def run():
         help="Root directory to search from (default: current directory)",
     )
 
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=1.0,
+        help="Delay (seconds) between submissions (default: 1.0)",
+    )
+
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
@@ -63,13 +83,26 @@ def run():
         print(f"  {s}")
 
     if not args.yes and not args.dry_run:
-        response = input("\nSubmit all jobs? [y/N] ").strip().lower()
+        response = input("\nSubmit all jobs one-by-one? [y/N] ").strip().lower()
         if response not in {"y", "yes"}:
             print("Aborted.")
             return
 
     print("")
-    for script in scripts:
-        submit_script(script, dry_run=args.dry_run)
+    failed = []
 
-    print("\nDone.")
+    for i, script in enumerate(scripts, start=1):
+        ok = submit_script(script, dry_run=args.dry_run)
+        if not ok:
+            failed.append(script)
+
+        # Sleep between submissions (except after last one)
+        if i < len(scripts):
+            time.sleep(args.delay)
+
+    print("\nSubmission complete.")
+
+    if failed:
+        print("\nThe following submissions failed:")
+        for s in failed:
+            print(f"  {s}")
