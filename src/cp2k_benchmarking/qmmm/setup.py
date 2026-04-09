@@ -86,6 +86,7 @@ def parse_time_policy(policy: str):
     thresholds = [int(c.strip()) for c in thresholds_part.split(",")]
 
     if len(times) != len(thresholds) + 1:
+        import pdb; pdb.set_trace()
         raise ValueError(
             "Time policy error: number of times must be exactly "
             "one more than the number of core thresholds"
