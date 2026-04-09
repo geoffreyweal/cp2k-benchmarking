@@ -7,16 +7,6 @@ from tqdm import tqdm
 
 
 def parse_cores(core_string: str) -> list:
-    """
-    Parse a core specification string.
-
-    Examples
-    --------
-    8                    -> [8]
-    1-8                  -> [1,2,3,4,5,6,7,8]
-    10-16%2              -> [10,12,14,16]
-    1-8,10-16%2          -> [1,2,3,4,5,6,7,8,10,12,14,16]
-    """
     cores = set()
 
     for block in core_string.split(","):
@@ -33,9 +23,7 @@ def parse_cores(core_string: str) -> list:
             range_part = block
             step = 1
 
-        start_str, end_str = range_part.split("-")
-        start = int(start_str)
-        end = int(end_str)
+        start, end = map(int, range_part.split("-"))
 
         for c in range(start, end + 1, step):
             cores.add(c)
@@ -44,10 +32,6 @@ def parse_cores(core_string: str) -> list:
 
 
 def mpi_openmp_permutations(total_cores: int):
-    """
-    Generate all (ntasks, cpus-per-task) permutations
-    such that ntasks * cpus-per-task = total_cores.
-    """
     return [
         (ntasks, total_cores // ntasks)
         for ntasks in range(1, total_cores + 1)
@@ -55,10 +39,18 @@ def mpi_openmp_permutations(total_cores: int):
     ]
 
 
+def parse_mem_value(mem_str: str) -> float:
+    """
+    Extract numeric value from SLURM memory strings like:
+    16G, 2000M, 2.5G
+    """
+    return float("".join(c for c in mem_str if c.isdigit() or c == "."))
+
+
 def run():
     parser = argparse.ArgumentParser(
         description="Set up CP2K QM/MM benchmarking directories "
-                    "(MPI/OpenMP permutations)"
+                    "(MPI/OpenMP permutations with memory policy)"
     )
 
     parser.add_argument(
@@ -67,32 +59,46 @@ def run():
         help="Core specification, e.g. 8, 1-32%2, or 8,16,32",
     )
 
+    parser.add_argument(
+        "--mem",
+        required=True,
+        help="Minimum total memory per job, e.g. 16G",
+    )
+
+    parser.add_argument(
+        "--mem-per-cpu",
+        required=True,
+        help="Memory per CPU, e.g. 2G",
+    )
+
     args = parser.parse_args()
 
     core_list = parse_cores(args.cores)
 
+    mem_floor = args.mem
+    mem_per_cpu = args.mem_per_cpu
+
+    mem_floor_val = parse_mem_value(mem_floor)
+    mem_per_cpu_val = parse_mem_value(mem_per_cpu)
+
     source_cp2k_files = Path("CP2K_Files")
     benchmark_root = Path("CP2K_Benchmarking")
     job_body_file = Path("cp2k_benchmarking_submit_include.txt")
-
-    # -------------------------
-    # Sanity checks
-    # -------------------------
 
     if not source_cp2k_files.is_dir():
         raise RuntimeError("CP2K_Files directory not found.")
 
     if not job_body_file.is_file():
         raise RuntimeError(
-            "Missing cp2k_benchmarking_submit_include.txt\n"
-            "This file must contain the full job body."
+            "Missing cp2k_benchmarking_submit_include.txt "
+            "(this must contain the full job body)."
         )
 
     job_body = job_body_file.read_text().strip()
     benchmark_root.mkdir(exist_ok=True)
 
     # -------------------------------------------------
-    # Precompute *all* configurations
+    # Precompute all jobs
     # -------------------------------------------------
 
     jobs = []
@@ -103,7 +109,7 @@ def run():
     print(f"\nGenerating {len(jobs)} benchmark configurations\n")
 
     # -------------------------------------------------
-    # Single global progress bar
+    # Create jobs with global progress
     # -------------------------------------------------
 
     with tqdm(total=len(jobs), desc="Creating benchmark configurations") as pbar:
@@ -126,6 +132,17 @@ def run():
                 else:
                     shutil.copy2(item, dest)
 
+            # -------------------------
+            # Memory decision
+            # -------------------------
+
+            requested_total_mem = total_cores * mem_per_cpu_val
+
+            if requested_total_mem > mem_floor_val:
+                mem_line = f"#SBATCH --mem-per-cpu={mem_per_cpu}"
+            else:
+                mem_line = f"#SBATCH --mem={mem_floor}"
+
             submit_file = dirname / "submit.sl"
 
             submit_file.write_text(f"""#!/bin/bash -e
@@ -133,6 +150,7 @@ def run():
 #SBATCH --job-name=cp2k_qmmm_{total_cores}C_{ntasks}MPI_{omp}OMP
 #SBATCH --ntasks={ntasks}
 #SBATCH --cpus-per-task={omp}
+{mem_line}
 #SBATCH --output=slurm_%j.out
 #SBATCH --error=slurm_%j.err
 
@@ -140,11 +158,10 @@ def run():
 """)
 
             os.chmod(submit_file, 0o755)
-
             pbar.update(1)
 
     print("\nSetup complete.")
-    print(
-        "One submit.sl file has been created for each "
-        "MPI/OpenMP configuration."
-    )
+    print("Memory policy applied:")
+    print(f"  Minimum memory      : {mem_floor}")
+    print(f"  Memory per CPU used if cores × mem-per-cpu > mem")
+``
