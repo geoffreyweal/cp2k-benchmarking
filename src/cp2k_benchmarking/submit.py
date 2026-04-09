@@ -63,10 +63,17 @@ def run():
     )
 
     parser.add_argument(
-        "--delay",
+        "--batch-size",
+        type=int,
+        default=10,
+        help="Number of jobs to submit before pausing (default: 10)",
+    )
+
+    parser.add_argument(
+        "--pause",
         type=float,
         default=1.0,
-        help="Delay (seconds) between submissions (default: 1.0)",
+        help="Pause duration in seconds after each batch (default: 1.0)",
     )
 
     args = parser.parse_args()
@@ -83,7 +90,7 @@ def run():
         print(f"  {s}")
 
     if not args.yes and not args.dry_run:
-        response = input("\nSubmit all jobs one-by-one? [y/N] ").strip().lower()
+        response = input("\nSubmit all jobs? [y/N] ").strip().lower()
         if response not in {"y", "yes"}:
             print("Aborted.")
             return
@@ -91,14 +98,20 @@ def run():
     print("")
     failed = []
 
-    for i, script in enumerate(scripts, start=1):
+    for idx, script in enumerate(scripts, start=1):
         ok = submit_script(script, dry_run=args.dry_run)
         if not ok:
             failed.append(script)
 
-        # Sleep between submissions (except after last one)
-        if i < len(scripts):
-            time.sleep(args.delay)
+        # Pause after every batch_size submissions (except at the very end)
+        if (
+            idx % args.batch_size == 0
+            and idx < len(scripts)
+        ):
+            print(
+                f"\nSubmitted {idx} jobs — pausing for {args.pause} s...\n"
+            )
+            time.sleep(args.pause)
 
     print("\nSubmission complete.")
 
@@ -106,3 +119,4 @@ def run():
         print("\nThe following submissions failed:")
         for s in failed:
             print(f"  {s}")
+``
