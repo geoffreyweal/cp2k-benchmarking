@@ -111,4 +111,3 @@ export OMP_NUM_THREADS={omp}
 
     print("\nSetup complete.")
     print("One submit.sl created per MPI/OpenMP configuration.")
-``
