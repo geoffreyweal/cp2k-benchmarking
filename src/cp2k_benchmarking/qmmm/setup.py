@@ -19,12 +19,10 @@ def parse_cores(core_string: str) -> list:
     for block in core_string.split(","):
         block = block.strip()
 
-        # Single value
         if "-" not in block:
             cores.add(int(block))
             continue
 
-        # Range or stepped range
         if "%" in block:
             range_part, step_part = block.split("%")
             step = int(step_part)
@@ -70,22 +68,21 @@ def run():
     # Paths
     source_cp2k_files = Path("CP2K_Files")
     benchmark_root = Path("CP2K_Benchmarking")
-    include_file = Path("cp2k_benchmarking_submit_include.txt")
+    job_body_file = Path("cp2k_benchmarking_submit_include.txt")
 
     # Sanity checks
     if not source_cp2k_files.is_dir():
         raise RuntimeError(
-            "CP2K_Files directory not found.\n"
-            "It must contain run_nvt.sh and CP2K inputs."
+            "CP2K_Files directory not found."
         )
 
-    if not include_file.is_file():
+    if not job_body_file.is_file():
         raise RuntimeError(
             "Missing cp2k_benchmarking_submit_include.txt\n"
-            "This file must contain site-specific #SBATCH directives."
+            "This file must contain the job body (modules, srun, etc.)."
         )
 
-    include_text = include_file.read_text().strip()
+    job_body_text = job_body_file.read_text().strip()
     benchmark_root.mkdir(exist_ok=True)
 
     # -------------------------------------------------
@@ -110,14 +107,9 @@ def run():
 
         print(f"Prepared: {core_dir}")
 
-        # -------------------------
-        # Write submit.sl
-        # -------------------------
-
         submit_file = core_dir / "submit.sl"
 
         submit_file.write_text(f"""#!/bin/bash -e
-{include_text}
 
 #SBATCH --job-name=cp2k_qmmm_benchmarking_{ntasks}cores
 #SBATCH --ntasks={ntasks}
@@ -125,7 +117,7 @@ def run():
 #SBATCH --output=slurm_%j.out
 #SBATCH --error=slurm_%j.err
 
-bash run_nvt.sh
+{job_body_text}
 """)
 
         os.chmod(submit_file, 0o755)
@@ -133,5 +125,3 @@ bash run_nvt.sh
     print("\nSetup complete.")
     print("Individual SLURM jobs created in:")
     print("  CP2K_Benchmarking/*cores/submit.sl")
-    print("\nJobs can be submitted later with, for example:")
-    print("  for d in CP2K_Benchmarking/*cores; do (cd \"$d\" && sbatch submit.sl); done")
