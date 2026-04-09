@@ -67,21 +67,22 @@ def parse_time_policy(policy: str):
     """
     Parse time policy of the form:
 
-      30:00,15:00,10:00->16,64
+      30:00,15:00,10:00@16,64
 
     Meaning:
       total_cores <= 16  -> 30:00
       total_cores <= 64  -> 15:00
       total_cores >  64  -> 10:00
     """
-    import pdb; pdb.set_trace()
-    if "->" not in policy:
+    policy = policy.strip()
+
+    if "@" not in policy:
         raise ValueError(
-            "Time policy must be of the form TIMES->THRESHOLDS, "
-            "e.g. 30:00,15:00,10:00->16,64"
+            "Time policy must be of the form TIMES@THRESHOLDS, "
+            "e.g. 30:00,15:00,10:00@16,64"
         )
 
-    times_part, thresholds_part = policy.split("->")
+    times_part, thresholds_part = policy.split("@", 1)
 
     times = [t.strip() for t in times_part.split(",")]
     thresholds = [int(c.strip()) for c in thresholds_part.split(",")]
@@ -97,21 +98,22 @@ def parse_time_policy(policy: str):
 
 def select_time(total_cores: int, times, thresholds) -> str:
     """
-    Select walltime for a given total core count
-    using the parsed time policy.
+    Select the appropriate walltime for a given core count.
     """
     for time_str, max_cores in zip(times, thresholds):
         if total_cores <= max_cores:
             return time_str
 
-    # Fallback (last time value)
+    # Fallback (last time in list)
     return times[-1]
 
 
 def run():
     parser = argparse.ArgumentParser(
-        description="Set up CP2K QM/MM benchmarking directories "
-                    "(MPI/OpenMP permutations with memory and time policies)"
+        description=(
+            "Set up CP2K QM/MM benchmarking directories "
+            "(MPI/OpenMP permutations with memory and time policies)"
+        )
     )
 
     parser.add_argument(
@@ -135,7 +137,7 @@ def run():
     parser.add_argument(
         "--time-policy",
         required=True,
-        help="Time policy, e.g. 30:00,15:00,10:00->16,64",
+        help="Time policy, e.g. 30:00,15:00,10:00@16,64",
     )
 
     args = parser.parse_args()
