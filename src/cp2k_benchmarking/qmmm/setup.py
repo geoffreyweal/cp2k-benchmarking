@@ -74,6 +74,12 @@ def parse_time_policy(policy: str):
       total_cores <= 64  -> 15:00
       total_cores >  64  -> 10:00
     """
+    if "->" not in policy:
+        raise ValueError(
+            "Time policy must be of the form TIMES->THRESHOLDS, "
+            "e.g. 30:00,15:00,10:00->16,64"
+        )
+
     times_part, thresholds_part = policy.split("->")
 
     times = [t.strip() for t in times_part.split(",")]
