@@ -19,10 +19,12 @@ def parse_cores(core_string: str) -> list:
     for block in core_string.split(","):
         block = block.strip()
 
+        # Single value
         if "-" not in block:
             cores.add(int(block))
             continue
 
+        # Range or stepped range
         if "%" in block:
             range_part, step_part = block.split("%")
             step = int(step_part)
@@ -51,19 +53,11 @@ def run():
         help="Core specification, e.g. 1-8,10-16%2,20-32%4",
     )
 
-    parser.add_argument(
-        "--mem-per-cpu",
-        default="2000MB",
-        help="Memory per CPU for SLURM, e.g. 2000MB, 2G (default: 2000MB)",
-    )
-
     args = parser.parse_args()
 
     ntasks_list = parse_cores(args.cores)
-    mem_per_cpu = args.mem_per_cpu
 
     print(f"Benchmarking cores: {ntasks_list}")
-    print(f"Memory per CPU:     {mem_per_cpu}")
 
     # Paths
     source_cp2k_files = Path("CP2K_Files")
@@ -79,7 +73,7 @@ def run():
     if not job_body_file.is_file():
         raise RuntimeError(
             "Missing cp2k_benchmarking_submit_include.txt\n"
-            "This file must contain the job body (modules, srun, etc.)."
+            "This file must contain the job body (SBATCH directives, modules, srun, etc.)."
         )
 
     job_body_text = job_body_file.read_text().strip()
@@ -113,7 +107,6 @@ def run():
 
 #SBATCH --job-name=cp2k_qmmm_benchmarking_{ntasks}cores
 #SBATCH --ntasks={ntasks}
-#SBATCH --mem-per-cpu={mem_per_cpu}
 #SBATCH --output=slurm_%j.out
 #SBATCH --error=slurm_%j.err
 
