@@ -1,30 +1,43 @@
 import sys
+
 from cp2k_benchmarking.qmmm import setup, report
+from cp2k_benchmarking import submit
 
 
 def main():
-    if len(sys.argv) < 3:
+    if len(sys.argv) < 2:
         print(
             "Usage:\n"
             "  cp2k_benchmarking qmmm setup [options]\n"
-            "  cp2k_benchmarking qmmm report"
+            "  cp2k_benchmarking qmmm report\n"
+            "  cp2k_benchmarking submit [options]"
         )
         sys.exit(1)
 
-    domain = sys.argv[1]    # qmmm (later: md, periodic, etc.)
-    command = sys.argv[2]   # setup / report
+    command = sys.argv[1]
 
-    # Strip program name + domain + command
-    sys.argv = [sys.argv[0]] + sys.argv[3:]
+    # Strip program name + command
+    sys.argv = [sys.argv[0]] + sys.argv[2:]
 
-    if domain == "qmmm":
-        if command == "setup":
+    if command == "qmmm":
+        if len(sys.argv) < 2:
+            print("Usage: cp2k_benchmarking qmmm <setup|report>")
+            sys.exit(1)
+
+        subcommand = sys.argv[1]
+        sys.argv = [sys.argv[0]] + sys.argv[2:]
+
+        if subcommand == "setup":
             setup.run()
-        elif command == "report":
+        elif subcommand == "report":
             report.run()
         else:
-            print(f"Unknown qmmm command: {command}")
+            print(f"Unknown qmmm command: {subcommand}")
             sys.exit(1)
+
+    elif command == "submit":
+        submit.run()
+
     else:
-        print(f"Unknown domain: {domain}")
+        print(f"Unknown command: {command}")
         sys.exit(1)
