@@ -5,28 +5,26 @@ from pathlib import Path
 from tqdm import tqdm
 
 
-# -------------------------------------------------
-# Parsing utilities
-# -------------------------------------------------
+# =================================================
+# Core parsing
+# =================================================
 
 def parse_cores(core_string: str) -> list:
     cores = set()
-
     for block in core_string.split(","):
         block = block.strip()
-
         if "-" not in block:
             cores.add(int(block))
             continue
 
         if "%" in block:
-            range_part, step_part = block.split("%")
-            step = int(step_part)
+            rng, step = block.split("%")
+            step = int(step)
         else:
-            range_part = block
+            rng = block
             step = 1
 
-        start, end = map(int, range_part.split("-"))
+        start, end = map(int, rng.split("-"))
         for c in range(start, end + 1, step):
             cores.add(c)
 
@@ -41,41 +39,36 @@ def mpi_openmp_permutations(total_cores: int):
     ]
 
 
-# -------------------------------------------------
-# Memory (MB-normalised)
-# -------------------------------------------------
+# =================================================
+# Memory handling (MB-normalised)
+# =================================================
 
 def parse_mem_value(mem_str: str) -> float:
     mem_str = mem_str.strip().upper()
 
-    if mem_str.endswith("GB") or mem_str.endswith("G"):
+    if mem_str.endswith(("GB", "G")):
         return float(mem_str.rstrip("GB").rstrip("G")) * 1024
-
-    if mem_str.endswith("MB") or mem_str.endswith("M"):
+    if mem_str.endswith(("MB", "M")):
         return float(mem_str.rstrip("MB").rstrip("M"))
 
-    raise ValueError(
-        f"Unrecognised memory format: {mem_str}. "
-        "Use M/MB or G/GB."
-    )
+    raise ValueError(f"Unrecognised memory format: {mem_str}")
 
 
-# -------------------------------------------------
-# Time policy
-# -------------------------------------------------
+# =================================================
+# Time policy + accounting
+# =================================================
 
 def parse_time_policy(policy: str):
-    policy = policy.strip()
-
+    # Example: 30:00,15:00,10:00@16,64
     if "@" not in policy:
         raise ValueError("Invalid time policy format")
 
     times_part, thresholds_part = policy.split("@", 1)
     times = [t.strip() for t in times_part.split(",")]
-    thresholds = [int(c.strip()) for c in thresholds_part.split(",")]
+    thresholds = [int(x.strip()) for x in thresholds_part.split(",")]
 
     if len(times) != len(thresholds) + 1:
-        raise ValueError("Invalid time policy")
+        raise ValueError("Time policy must have N+1 times for N thresholds")
 
     return times, thresholds
 
@@ -87,19 +80,44 @@ def select_time(total_cores: int, times, thresholds) -> str:
     return times[-1]
 
 
-# -------------------------------------------------
+def parse_slurm_time_to_seconds(time_str: str) -> int:
+    time_str = time_str.strip()
+
+    days = 0
+    if "-" in time_str:
+        d, t = time_str.split("-", 1)
+        days = int(d)
+    else:
+        t = time_str
+
+    parts = list(map(int, t.split(":")))
+    if len(parts) == 2:
+        h = 0
+        m, s = parts
+    elif len(parts) == 3:
+        h, m, s = parts
+    else:
+        raise ValueError(f"Invalid SLURM time format: {time_str}")
+
+    return days * 86400 + h * 3600 + m * 60 + s
+
+
+def format_seconds(seconds: int) -> str:
+    days, r = divmod(seconds, 86400)
+    h, r = divmod(r, 3600)
+    m, s = divmod(r, 60)
+
+    if days > 0:
+        return f"{days}d {h:02d}:{m:02d}:{s:02d}"
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+# =================================================
 # Node policy
-# -------------------------------------------------
+# =================================================
 
 def parse_node_policy(policy: str):
-    policy = policy.strip()
-
-    if "@" not in policy:
-        raise ValueError(
-            "Node policy must be NODESETS@THRESHOLD "
-            "(e.g. [l05],[l05,l06]@166)"
-        )
-
+    # Example: [l05],[l05,l06]@166
     nodesets_part, threshold_part = policy.split("@", 1)
     threshold = int(threshold_part.strip())
 
@@ -108,29 +126,24 @@ def parse_node_policy(policy: str):
 
     for s in raw_sets:
         s = s.strip().lstrip("[").rstrip("]")
-        nodes = [n.strip() for n in s.split(",") if n.strip()]
-        node_sets.append(nodes)
+        node_sets.append([n.strip() for n in s.split(",") if n.strip()])
 
     if len(node_sets) != 2:
-        raise ValueError("Exactly two node sets must be supplied")
+        raise ValueError("Exactly two node sets must be provided")
 
     return node_sets[0], node_sets[1], threshold
 
 
 def select_nodes(total_cores: int, low_nodes, high_nodes, threshold):
-    if total_cores <= threshold:
-        return low_nodes
-    return high_nodes
+    return low_nodes if total_cores <= threshold else high_nodes
 
 
-# -------------------------------------------------
+# =================================================
 # Main
-# -------------------------------------------------
+# =================================================
 
 def run():
-    parser = argparse.ArgumentParser(
-        description="CP2K benchmarking setup with core, memory, time, and node policies"
-    )
+    parser = argparse.ArgumentParser("CP2K benchmarking setup")
 
     parser.add_argument("--cores", required=True)
     parser.add_argument("--mem", required=True)
@@ -141,26 +154,24 @@ def run():
     args = parser.parse_args()
 
     core_list = parse_cores(args.cores)
-
-    mem_floor = args.mem
-    mem_per_cpu = args.mem_per_cpu
-    mem_floor_val = parse_mem_value(mem_floor)
-    mem_per_cpu_val = parse_mem_value(mem_per_cpu)
-
-    times, thresholds = parse_time_policy(args.time_policy)
-
+    times, time_thresholds = parse_time_policy(args.time_policy)
     low_nodes, high_nodes, node_threshold = parse_node_policy(args.node_policy)
 
-    source_cp2k_files = Path("CP2K_Files")
-    benchmark_root = Path("CP2K_Benchmarking")
+    mem_floor_val = parse_mem_value(args.mem)
+    mem_cpu_val = parse_mem_value(args.mem_per_cpu)
+
+    bench_root = Path("CP2K_Benchmarking")
+    bench_root.mkdir(exist_ok=True)
+
+    src_files = Path("CP2K_Files")
     job_body = Path("cp2k_benchmarking_submit_include.txt").read_text().strip()
 
-    benchmark_root.mkdir(exist_ok=True)
-
     jobs = []
-    for total_cores in core_list:
-        for ntasks, omp in mpi_openmp_permutations(total_cores):
-            jobs.append((total_cores, ntasks, omp))
+    for c in core_list:
+        for nt, omp in mpi_openmp_permutations(c):
+            jobs.append((c, nt, omp))
+
+    total_requested_seconds = 0
 
     with tqdm(total=len(jobs), desc="Creating benchmark configurations") as pbar:
         for total_cores, ntasks, omp in jobs:
@@ -168,25 +179,25 @@ def run():
                 total_cores, low_nodes, high_nodes, node_threshold
             )
 
-            dirname = benchmark_root / f"{total_cores}_Cores_{ntasks}_MPI_{omp}_OpenMPI"
-            dirname.mkdir(parents=True, exist_ok=True)
+            dirname = bench_root / f"{total_cores}_Cores_{ntasks}_MPI_{omp}_OpenMPI"
+            if dirname.exists():
+                shutil.rmtree(dirname)
+            dirname.mkdir(parents=True)
 
-            for item in source_cp2k_files.iterdir():
-                dest = dirname / item.name
-                if item.is_dir():
-                    shutil.copytree(item, dest, dirs_exist_ok=True)
-                else:
-                    shutil.copy2(item, dest)
+            for f in src_files.iterdir():
+                shutil.copytree(f, dirname / f.name, dirs_exist_ok=True) if f.is_dir() else shutil.copy2(f, dirname / f.name)
 
-            if total_cores * mem_per_cpu_val > mem_floor_val:
-                mem_line = f"#SBATCH --mem-per-cpu={mem_per_cpu}"
+            # Memory policy
+            if total_cores * mem_cpu_val > mem_floor_val:
+                mem_line = f"#SBATCH --mem-per-cpu={args.mem_per_cpu}"
             else:
-                mem_line = f"#SBATCH --mem={mem_floor}"
+                mem_line = f"#SBATCH --mem={args.mem}"
 
-            time_value = select_time(total_cores, times, thresholds)
+            time_value = select_time(total_cores, times, time_thresholds)
+            total_requested_seconds += parse_slurm_time_to_seconds(time_value)
 
-            submit_file = dirname / "submit.sl"
-            submit_file.write_text(f"""#!/bin/bash -e
+            submit = dirname / "submit.sl"
+            submit.write_text(f"""#!/bin/bash -e
 
 #SBATCH --job-name=cp2k_qmmm_{total_cores}C_{ntasks}MPI_{omp}OMP
 #SBATCH --ntasks={ntasks}
@@ -204,3 +215,7 @@ def run():
             pbar.update(1)
 
     print("\nSetup complete.")
+    print(f"Total requested walltime across all jobs: "
+          f"{format_seconds(total_requested_seconds)} "
+          f"({total_requested_seconds:,} seconds)")
+``
