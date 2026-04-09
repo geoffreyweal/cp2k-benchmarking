@@ -4,14 +4,15 @@ import time
 from pathlib import Path
 
 
-# -------------------------------------------------
+# =================================================
 # Time parsing utilities
-# -------------------------------------------------
+# =================================================
 
 def parse_slurm_time_to_seconds(time_str: str) -> int:
     """
     Convert SLURM time formats to seconds.
-    Supports:
+
+    Supported formats:
       MM:SS
       HH:MM:SS
       D-HH:MM:SS
@@ -20,37 +21,45 @@ def parse_slurm_time_to_seconds(time_str: str) -> int:
 
     days = 0
     if "-" in time_str:
-        d, t = time_str.split("-", 1)
-        days = int(d)
+        day_part, time_part = time_str.split("-", 1)
+        days = int(day_part)
     else:
-        t = time_str
+        time_part = time_str
 
-    parts = list(map(int, t.split(":")))
+    parts = list(map(int, time_part.split(":")))
 
     if len(parts) == 2:
-        h = 0
-        m, s = parts
+        hours = 0
+        minutes, seconds = parts
     elif len(parts) == 3:
-        h, m, s = parts
+        hours, minutes, seconds = parts
     else:
         raise ValueError(f"Invalid SLURM time format: {time_str}")
 
-    return days * 86400 + h * 3600 + m * 60 + s
+    return (
+        days * 86400 +
+        hours * 3600 +
+        minutes * 60 +
+        seconds
+    )
 
 
 def format_seconds(seconds: int) -> str:
+    """
+    Format seconds as Dd HH:MM:SS or HH:MM:SS.
+    """
     days, rem = divmod(seconds, 86400)
-    h, rem = divmod(rem, 3600)
-    m, s = divmod(rem, 60)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
 
     if days > 0:
-        return f"{days}d {h:02d}:{m:02d}:{s:02d}"
-    return f"{h:02d}:{m:02d}:{s:02d}"
+        return f"{days}d {hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 def extract_walltime_from_submit(script: Path) -> int:
     """
-    Extract #SBATCH --time from submit.sl and return seconds.
+    Extract #SBATCH --time from a submit.sl file.
     """
     for line in script.read_text().splitlines():
         line = line.strip()
@@ -61,15 +70,22 @@ def extract_walltime_from_submit(script: Path) -> int:
     raise RuntimeError(f"No --time directive found in {script}")
 
 
-# -------------------------------------------------
-# Submission logic
-# -------------------------------------------------
+# =================================================
+# Submission helpers
+# =================================================
 
 def find_submit_scripts(root: Path) -> list:
+    """
+    Recursively find all submit.sl files under root.
+    """
     return sorted(root.rglob("submit.sl"))
 
 
 def submit_script(path: Path, dry_run: bool = False) -> bool:
+    """
+    Submit a single submit.sl file using sbatch.
+    Returns True on success, False on failure.
+    """
     if dry_run:
         print(f"[DRY-RUN] sbatch {path}")
         return True
@@ -93,16 +109,30 @@ def submit_script(path: Path, dry_run: bool = False) -> bool:
     return True
 
 
+# =================================================
+# Main entry point
+# =================================================
+
 def run():
     parser = argparse.ArgumentParser(
-        description="Submit all submit.sl files and report total walltime"
+        description="Submit all submit.sl files and report walltime correctly"
     )
 
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--root", default=".")
-    parser.add_argument("--batch-size", type=int, default=10)
-    parser.add_argument("--pause", type=float, default=1.0)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=10,
+        help="Number of jobs to submit before pausing"
+    )
+    parser.add_argument(
+        "--pause",
+        type=float,
+        default=1.0,
+        help="Pause duration (seconds) after each batch"
+    )
 
     args = parser.parse_args()
 
@@ -113,19 +143,22 @@ def run():
         print("No submit.sl files found.")
         return
 
-    total_walltime_seconds = 0
+    # ---------------------------------------------
+    # Initial walltime accounting
+    # ---------------------------------------------
     walltimes = {}
+    remaining_walltime_seconds = 0
 
-    for s in scripts:
-        wt = extract_walltime_from_submit(s)
-        walltimes[s] = wt
-        total_walltime_seconds += wt
+    for script in scripts:
+        wt = extract_walltime_from_submit(script)
+        walltimes[script] = wt
+        remaining_walltime_seconds += wt
 
     print(f"Found {len(scripts)} submit.sl files")
     print(
-        f"Total requested walltime: "
-        f"{format_seconds(total_walltime_seconds)} "
-        f"({total_walltime_seconds:,} seconds)\n"
+        f"Total requested walltime before submission: "
+        f"{format_seconds(remaining_walltime_seconds)} "
+        f"({remaining_walltime_seconds:,} seconds)\n"
     )
 
     if not args.yes and not args.dry_run:
@@ -136,9 +169,15 @@ def run():
 
     failed = []
 
+    # ---------------------------------------------
+    # Submission loop
+    # ---------------------------------------------
     for idx, script in enumerate(scripts, start=1):
         ok = submit_script(script, dry_run=args.dry_run)
-        if not ok:
+
+        if ok:
+            remaining_walltime_seconds -= walltimes[script]
+        else:
             failed.append(script)
 
         if idx % args.batch_size == 0 and idx < len(scripts):
@@ -147,6 +186,9 @@ def run():
             )
             time.sleep(args.pause)
 
+    # ---------------------------------------------
+    # Final reporting
+    # ---------------------------------------------
     print("\nSubmission complete.")
 
     if failed:
@@ -154,8 +196,11 @@ def run():
         for s in failed:
             print(f"  {s}")
 
-    print(
-        f"\nTotal walltime of submitted jobs: "
-        f"{format_seconds(total_walltime_seconds)} "
-        f"({total_walltime_seconds:,} seconds)"
-    )
+    if remaining_walltime_seconds > 0:
+        print(
+            f"\nRemaining walltime (jobs not submitted): "
+            f"{format_seconds(remaining_walltime_seconds)} "
+            f"({remaining_walltime_seconds:,} seconds)"
+        )
+    else:
+        print("\nAll jobs were submitted successfully.")
