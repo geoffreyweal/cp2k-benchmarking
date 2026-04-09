@@ -5,15 +5,19 @@ from pathlib import Path
 from tqdm import tqdm
 
 
+# -------------------------------------------------
+# Parsing utilities
+# -------------------------------------------------
+
 def parse_cores(core_string: str) -> list:
     """
     Parse a core specification string.
 
     Examples:
-      8                    -> [8]
-      1-8                  -> [1,2,3,4,5,6,7,8]
-      10-16%2              -> [10,12,14,16]
-      1-8,10-16%2          -> [1,2,3,4,5,6,7,8,10,12,14,16]
+      8
+      1-8
+      10-16%2
+      1-8,10-16%2
     """
     cores = set()
 
@@ -40,8 +44,8 @@ def parse_cores(core_string: str) -> list:
 
 def mpi_openmp_permutations(total_cores: int):
     """
-    Generate all (MPI ranks, OpenMP threads) pairs
-    such that MPI * OpenMP = total_cores.
+    Generate all (MPI ranks, OpenMP threads) such that:
+        MPI * OpenMP = total_cores
     """
     return [
         (ntasks, total_cores // ntasks)
@@ -49,6 +53,10 @@ def mpi_openmp_permutations(total_cores: int):
         if total_cores % ntasks == 0
     ]
 
+
+# -------------------------------------------------
+# Memory handling (normalised to MB)
+# -------------------------------------------------
 
 def parse_mem_value(mem_str: str) -> float:
     """
@@ -59,8 +67,6 @@ def parse_mem_value(mem_str: str) -> float:
       2.5G   -> 2560
       2000M  -> 2000
       2000MB -> 2000
-
-    Units must be M/MB or G/GB.
     """
     mem_str = mem_str.strip().upper()
 
@@ -74,9 +80,13 @@ def parse_mem_value(mem_str: str) -> float:
 
     raise ValueError(
         f"Unrecognised memory format: {mem_str}. "
-        "Please use M/MB or G/GB."
+        "Use M/MB or G/GB."
     )
 
+
+# -------------------------------------------------
+# Time handling
+# -------------------------------------------------
 
 def parse_time_policy(policy: str):
     """
@@ -85,41 +95,91 @@ def parse_time_policy(policy: str):
       30:00,15:00,10:00@16,64
 
     Meaning:
-      total_cores <= 16  -> 30:00
-      total_cores <= 64  -> 15:00
-      total_cores >  64  -> 10:00
+      total_cores <= 16 -> 30:00
+      total_cores <= 64 -> 15:00
+      otherwise         -> 10:00
     """
     policy = policy.strip()
 
     if "@" not in policy:
         raise ValueError(
-            "Time policy must be of the form TIMES@THRESHOLDS, "
-            "e.g. 30:00,15:00,10:00@16,64"
+            "Time policy must be of the form TIMES@THRESHOLDS "
+            "(e.g. 30:00,15:00,10:00@16,64)"
         )
 
     times_part, thresholds_part = policy.split("@", 1)
-
     times = [t.strip() for t in times_part.split(",")]
     thresholds = [int(c.strip()) for c in thresholds_part.split(",")]
 
     if len(times) != len(thresholds) + 1:
         raise ValueError(
-            "Time policy error: number of times must be exactly "
-            "one more than the number of core thresholds"
+            "Time policy error: number of times must be "
+            "exactly one more than the number of thresholds"
         )
 
     return times, thresholds
 
 
 def select_time(total_cores: int, times, thresholds) -> str:
-    """
-    Select walltime based on total core count.
-    """
     for time_str, max_cores in zip(times, thresholds):
         if total_cores <= max_cores:
             return time_str
     return times[-1]
 
+
+def parse_slurm_time_to_seconds(time_str: str) -> int:
+    """
+    Convert SLURM time to seconds.
+
+    Supports:
+      MM:SS
+      HH:MM:SS
+      D-HH:MM:SS
+    """
+    time_str = time_str.strip()
+
+    days = 0
+    if "-" in time_str:
+        day_part, time_part = time_str.split("-", 1)
+        days = int(day_part)
+    else:
+        time_part = time_str
+
+    parts = list(map(int, time_part.split(":")))
+
+    if len(parts) == 2:
+        hours = 0
+        minutes, seconds = parts
+    elif len(parts) == 3:
+        hours, minutes, seconds = parts
+    else:
+        raise ValueError(f"Invalid SLURM time format: {time_str}")
+
+    return (
+        days * 24 * 3600
+        + hours * 3600
+        + minutes * 60
+        + seconds
+    )
+
+
+def format_seconds(seconds: int) -> str:
+    """
+    Format seconds as Dd HH:MM:SS or HH:MM:SS
+    """
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+
+    if days > 0:
+        return f"{days}d {hours:02d}:{minutes:02d}:{secs:02d}"
+    else:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+# -------------------------------------------------
+# Main entry point
+# -------------------------------------------------
 
 def run():
     parser = argparse.ArgumentParser(
@@ -138,14 +198,13 @@ def run():
 
     core_list = parse_cores(args.cores)
 
-    # -------- Memory handling (unit-normalised to MB) --------
+    # ---- Memory (MB) ----
     mem_floor = args.mem
     mem_per_cpu = args.mem_per_cpu
-
     mem_floor_val = parse_mem_value(mem_floor)
     mem_per_cpu_val = parse_mem_value(mem_per_cpu)
 
-    # -------- Time policy --------
+    # ---- Time policy ----
     times, thresholds = parse_time_policy(args.time_policy)
 
     source_cp2k_files = Path("CP2K_Files")
@@ -162,22 +221,20 @@ def run():
 
     job_body = job_body_file.read_text().strip()
 
-    # -------- Safety check: memory directives must not be overridden --------
+    # ---- Safety check ----
     for forbidden in ("--mem=", "--mem-per-cpu=", "--mem-per-gpu="):
         if forbidden in job_body:
             print(
                 "\nWARNING:\n"
-                "Memory directives were found in "
+                "Memory directives found in "
                 "cp2k_benchmarking_submit_include.txt.\n"
-                "These will OVERRIDE the memory policy defined in setup.py.\n"
-                "Please remove all --mem*, --mem-per-cpu*, and --mem-per-gpu*\n"
-                "directives from the include file.\n"
+                "These will OVERRIDE setup.py memory policy.\n"
             )
             break
 
     benchmark_root.mkdir(exist_ok=True)
 
-    # -------- Precompute all benchmark jobs --------
+    # ---- Generate all jobs ----
     jobs = []
     for total_cores in core_list:
         for ntasks, omp in mpi_openmp_permutations(total_cores):
@@ -185,7 +242,8 @@ def run():
 
     print(f"\nGenerating {len(jobs)} benchmark configurations\n")
 
-    # -------- Generate directories and submit scripts --------
+    total_requested_seconds = 0
+
     with tqdm(total=len(jobs), desc="Creating benchmark configurations") as pbar:
         for total_cores, ntasks, omp in jobs:
             dirname = (
@@ -195,7 +253,6 @@ def run():
 
             if dirname.exists():
                 shutil.rmtree(dirname)
-
             dirname.mkdir(parents=True)
 
             for item in source_cp2k_files.iterdir():
@@ -205,17 +262,17 @@ def run():
                 else:
                     shutil.copy2(item, dest)
 
-            # -------- Memory policy --------
+            # ---- Memory policy ----
             if total_cores * mem_per_cpu_val > mem_floor_val:
                 mem_line = f"#SBATCH --mem-per-cpu={mem_per_cpu}"
             else:
                 mem_line = f"#SBATCH --mem={mem_floor}"
 
-            # -------- Time policy --------
+            # ---- Time policy ----
             time_value = select_time(total_cores, times, thresholds)
+            total_requested_seconds += parse_slurm_time_to_seconds(time_value)
 
             submit_file = dirname / "submit.sl"
-
             submit_file.write_text(f"""#!/bin/bash -e
 
 #SBATCH --job-name=cp2k_qmmm_{total_cores}C_{ntasks}MPI_{omp}OMP
@@ -233,3 +290,9 @@ def run():
 
     print("\nSetup complete.")
     print("Memory and time policies applied correctly.")
+    print(
+        f"\nTotal requested walltime across all jobs: "
+        f"{format_seconds(total_requested_seconds)} "
+        f"({total_requested_seconds:,} seconds)"
+    )
+``
