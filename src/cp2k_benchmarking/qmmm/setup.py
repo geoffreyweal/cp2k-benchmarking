@@ -3,6 +3,8 @@ import os
 import shutil
 from pathlib import Path
 
+from tqdm import tqdm
+
 
 def parse_cores(core_string: str) -> list:
     """
@@ -56,7 +58,8 @@ def mpi_openmp_permutations(total_cores: int):
 
 def run():
     parser = argparse.ArgumentParser(
-        description="Set up CP2K QM/MM benchmarking directories (MPI/OpenMP permutations)"
+        description="Set up CP2K QM/MM benchmarking directories "
+                    "(MPI/OpenMP permutations)"
     )
 
     parser.add_argument(
@@ -73,6 +76,10 @@ def run():
     benchmark_root = Path("CP2K_Benchmarking")
     job_body_file = Path("cp2k_benchmarking_submit_include.txt")
 
+    # -------------------------
+    # Sanity checks
+    # -------------------------
+
     if not source_cp2k_files.is_dir():
         raise RuntimeError("CP2K_Files directory not found.")
 
@@ -85,12 +92,20 @@ def run():
     job_body = job_body_file.read_text().strip()
     benchmark_root.mkdir(exist_ok=True)
 
-    print("Generating MPI/OpenMP benchmarking permutations:\n")
+    print("\nGenerating MPI/OpenMP benchmarking permutations\n")
 
-    for total_cores in core_list:
+    # -------------------------
+    # Main generation loop
+    # -------------------------
+
+    for total_cores in tqdm(core_list, desc="Total core counts"):
         permutations = mpi_openmp_permutations(total_cores)
 
-        for ntasks, omp in permutations:
+        for ntasks, omp in tqdm(
+            permutations,
+            desc=f"{total_cores} cores permutations",
+            leave=False,
+        ):
             dirname = (
                 benchmark_root
                 / f"{total_cores}_Cores_{ntasks}_MPI_{omp}_OpenMPI"
@@ -124,7 +139,9 @@ def run():
 
             os.chmod(submit_file, 0o755)
 
-            print(f"  created {dirname.name}")
-
     print("\nSetup complete.")
-    print("One submit.sl file has been created per MPI/OpenMP configuration.")
+    print(
+        "One submit.sl file has been created for each "
+        "MPI/OpenMP configuration."
+    )
+``
