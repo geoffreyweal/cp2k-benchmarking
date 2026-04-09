@@ -48,12 +48,11 @@ def mpi_openmp_permutations(total_cores: int):
     Generate all (ntasks, cpus-per-task) permutations
     such that ntasks * cpus-per-task = total_cores.
     """
-    permutations = []
-    for ntasks in range(1, total_cores + 1):
-        if total_cores % ntasks == 0:
-            omp = total_cores // ntasks
-            permutations.append((ntasks, omp))
-    return permutations
+    return [
+        (ntasks, total_cores // ntasks)
+        for ntasks in range(1, total_cores + 1)
+        if total_cores % ntasks == 0
+    ]
 
 
 def run():
@@ -92,20 +91,23 @@ def run():
     job_body = job_body_file.read_text().strip()
     benchmark_root.mkdir(exist_ok=True)
 
-    print("\nGenerating MPI/OpenMP benchmarking permutations\n")
+    # -------------------------------------------------
+    # Precompute *all* configurations
+    # -------------------------------------------------
 
-    # -------------------------
-    # Main generation loop
-    # -------------------------
+    jobs = []
+    for total_cores in core_list:
+        for ntasks, omp in mpi_openmp_permutations(total_cores):
+            jobs.append((total_cores, ntasks, omp))
 
-    for total_cores in tqdm(core_list, desc="Total core counts"):
-        permutations = mpi_openmp_permutations(total_cores)
+    print(f"\nGenerating {len(jobs)} benchmark configurations\n")
 
-        for ntasks, omp in tqdm(
-            permutations,
-            desc=f"{total_cores} cores permutations",
-            leave=False,
-        ):
+    # -------------------------------------------------
+    # Single global progress bar
+    # -------------------------------------------------
+
+    with tqdm(total=len(jobs), desc="Creating benchmark configurations") as pbar:
+        for total_cores, ntasks, omp in jobs:
             dirname = (
                 benchmark_root
                 / f"{total_cores}_Cores_{ntasks}_MPI_{omp}_OpenMPI"
@@ -139,9 +141,10 @@ def run():
 
             os.chmod(submit_file, 0o755)
 
+            pbar.update(1)
+
     print("\nSetup complete.")
     print(
         "One submit.sl file has been created for each "
         "MPI/OpenMP configuration."
     )
-``
