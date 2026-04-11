@@ -115,7 +115,7 @@ def submit_script(path: Path, dry_run: bool = False) -> bool:
 
 def run():
     parser = argparse.ArgumentParser(
-        description="Submit all submit.sl files and report walltime correctly"
+        description="Submit all submit.sl files and report walltime totals"
     )
 
     parser.add_argument("--dry-run", action="store_true")
@@ -147,18 +147,21 @@ def run():
     # Initial walltime accounting
     # ---------------------------------------------
     walltimes = {}
-    remaining_walltime_seconds = 0
+    total_walltime_seconds = 0
 
     for script in scripts:
         wt = extract_walltime_from_submit(script)
         walltimes[script] = wt
-        remaining_walltime_seconds += wt
+        total_walltime_seconds += wt
+
+    remaining_walltime_seconds = total_walltime_seconds
+    submitted_walltime_seconds = 0
 
     print(f"Found {len(scripts)} submit.sl files")
     print(
         f"Total requested walltime before submission: "
-        f"{format_seconds(remaining_walltime_seconds)} "
-        f"({remaining_walltime_seconds:,} seconds)\n"
+        f"{format_seconds(total_walltime_seconds)} "
+        f"({total_walltime_seconds:,} seconds)\n"
     )
 
     if not args.yes and not args.dry_run:
@@ -176,6 +179,7 @@ def run():
         ok = submit_script(script, dry_run=args.dry_run)
 
         if ok:
+            submitted_walltime_seconds += walltimes[script]
             remaining_walltime_seconds -= walltimes[script]
         else:
             failed.append(script)
@@ -196,11 +200,18 @@ def run():
         for s in failed:
             print(f"  {s}")
 
+    # This is what you asked for:
+    print(
+        f"\nWalltime of successfully submitted jobs: "
+        f"{format_seconds(submitted_walltime_seconds)} "
+        f"({submitted_walltime_seconds:,} seconds)"
+    )
+
     if remaining_walltime_seconds > 0:
         print(
-            f"\nRemaining walltime (jobs not submitted): "
+            f"Walltime of jobs not submitted: "
             f"{format_seconds(remaining_walltime_seconds)} "
             f"({remaining_walltime_seconds:,} seconds)"
         )
     else:
-        print("\nAll jobs were submitted successfully.")
+        print("All jobs were submitted successfully.")
