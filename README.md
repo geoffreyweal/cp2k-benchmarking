@@ -92,7 +92,7 @@ cp2k-benchmarking submit       # Submit all generated jobs sequentially
 ### Basic Usage
 
 ```bash
-cp2k-benchmarking qmmm setup   --cores 1-8,10-16%2,20-32%4,40-166%8,166-332%8 --mem=128G --mem-per-cpu=2200MB --time-policy 30:00,15:00,10:00@16,64 --node-policy [l01],[l01,l02]@166
+cp2k-benchmarking qmmm setup --cores 1-8,10-16%2,20-32%4,40-166%8,166-332%8 --mem=128G --mem-per-cpu=2200MB --time-policy 30:00,15:00,10:00@16,64 --node-policy [l01],[l01,l02]@166
 ```
 
 ---
