@@ -13,7 +13,7 @@ except Exception:  # pragma: no cover
 
 
 # ------------------------------------------------------------
-# Directory name parsing
+# Directory / filename patterns
 # ------------------------------------------------------------
 
 DIR_RE = re.compile(
@@ -46,19 +46,18 @@ def parse_nvt_ener_avg_used_time(path: Path) -> float | None:
             if len(parts) < 2:
                 continue
 
-            # Expect first column is step number
+            # Step Nr is first column
             try:
                 step = int(parts[0])
             except ValueError:
                 continue
 
-            # UsedTime[s] is the last column
+            # UsedTime[s] is last column
             try:
                 used_time = float(parts[-1])
             except ValueError:
                 continue
 
-            # Skip step 0 explicitly
             if step == 0:
                 continue
 
@@ -71,7 +70,7 @@ def parse_nvt_ener_avg_used_time(path: Path) -> float | None:
 
 
 # ------------------------------------------------------------
-# SLURM sacct helpers (your logic, made robust)
+# SLURM sacct helpers (based on your algorithm)
 # ------------------------------------------------------------
 
 def run_sacct(jobid: str, taskid: str | None = None):
@@ -99,16 +98,14 @@ def parse_sacct_data(data):
       * total CPU time (s)
       * maximum RSS (GB)
 
-    This uses the structure you provided, but with guards so it doesn't crash
-    if some keys are absent on certain clusters or sacct versions.
+    Uses your intended structure, but with defensive guards for
+    site/version differences.
     """
     jobs = data.get("jobs", [])
     if not jobs:
         raise RuntimeError("sacct returned no jobs")
 
     job = jobs[0]
-
-    # elapsed seconds
     elapsed = float(job.get("time", {}).get("elapsed", 0.0))
 
     cpu_msec = 0
@@ -122,7 +119,6 @@ def parse_sacct_data(data):
         for t in total:
             ttype = t.get("type")
             count = t.get("count", 0)
-
             if ttype == "cpu":
                 cpu_msec += count
             elif ttype == "mem":
@@ -130,23 +126,6 @@ def parse_sacct_data(data):
 
     max_mem_gb = max_mem_b / 1024.0 / 1024.0 / 1024.0
     return elapsed, cpu_msec / 1000.0, max_mem_gb
-
-
-# ------------------------------------------------------------
-# Utilities
-# ------------------------------------------------------------
-
-def find_slurm_out_jobid(sim_dir: Path):
-    """
-    Find slurm_*.out in sim_dir and return (jobid, taskid) if found.
-    Chooses the newest slurm_*.out if multiple exist.
-    """
-    candidates = sorted(sim_dir.glob("slurm_*.out"), key=lambda p: p.stat().st_mtime, reverse=True)
-    for p in candidates:
-        m = SLURM_OUT_RE.match(p.name)
-        if m:
-            return m.group("jobid"), m.group("taskid")
-    return None, None
 
 
 def safe_sacct(jobid: str | None, taskid: str | None):
@@ -157,7 +136,6 @@ def safe_sacct(jobid: str | None, taskid: str | None):
     if not jobid:
         return None, None, None
 
-    # Try with taskid if available
     if taskid is not None:
         try:
             data = run_sacct(jobid, taskid)
@@ -165,7 +143,6 @@ def safe_sacct(jobid: str | None, taskid: str | None):
         except Exception:
             pass
 
-    # Fallback: try jobid alone
     try:
         data = run_sacct(jobid, None)
         return parse_sacct_data(data)
@@ -173,19 +150,33 @@ def safe_sacct(jobid: str | None, taskid: str | None):
         return None, None, None
 
 
+# ------------------------------------------------------------
+# slurm_*.out lookup
+# ------------------------------------------------------------
+
+def find_slurm_out_jobid(sim_dir: Path):
+    """
+    Find slurm_*.out in sim_dir and return (jobid, taskid) if found.
+    Chooses the newest slurm_*.out if multiple exist.
+    """
+    candidates = sorted(
+        sim_dir.glob("slurm_*.out"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for p in candidates:
+        m = SLURM_OUT_RE.match(p.name)
+        if m:
+            return m.group("jobid"), m.group("taskid")
+    return None, None
+
+
+# ------------------------------------------------------------
+# Output helpers
+# ------------------------------------------------------------
+
 def write_csv(rows: list[dict], out_csv: Path):
     out_csv.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        # write header only
-        with out_csv.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "directory", "total_cores", "mpi_ranks", "omp_threads",
-                "avg_used_time_s", "jobid", "taskid",
-                "sacct_elapsed_s", "sacct_cpu_s", "sacct_rss_gb"
-            ])
-        return
-
     fieldnames = [
         "directory", "total_cores", "mpi_ranks", "omp_threads",
         "avg_used_time_s", "jobid", "taskid",
@@ -198,74 +189,214 @@ def write_csv(rows: list[dict], out_csv: Path):
             w.writerow(r)
 
 
-def make_plots(rows: list[dict], out_dir: Path):
+# ------------------------------------------------------------
+# Plotly plotting (interactive HTML)
+# ------------------------------------------------------------
+
+def _nearest_grid_surface(x, y, z, nx=35, ny=35):
     """
-    Create simple matplotlib plots. If matplotlib is missing,
-    print a message and skip plotting.
+    Create a surface-like grid from scattered (x,y,z) points using
+    nearest-neighbour assignment (no SciPy required).
+
+    Returns (Xgrid, Ygrid, Zgrid) suitable for plotly go.Surface.
+    """
+    import numpy as np
+
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    z = np.asarray(z, dtype=float)
+
+    xmin, xmax = float(x.min()), float(x.max())
+    ymin, ymax = float(y.min()), float(y.max())
+
+    xi = np.linspace(xmin, xmax, nx)
+    yi = np.linspace(ymin, ymax, ny)
+    X, Y = np.meshgrid(xi, yi)
+
+    Z = np.empty_like(X, dtype=float)
+    for j in range(Y.shape[0]):
+        for i in range(X.shape[1]):
+            dx = x - X[j, i]
+            dy = y - Y[j, i]
+            k = int((dx * dx + dy * dy).argmin())
+            Z[j, i] = z[k]
+
+    return X, Y, Z
+
+
+def make_plotly_plots(rows: list[dict], out_dir: Path):
+    """
+    Generate interactive Plotly HTML plots:
+
+    - 3D: MPI vs OpenMP vs metric (scatter + optional surface-like overlay)
+    - 2D: total_cores vs metric with:
+          * legend toggles per total_cores group
+          * dropdown filter to show only cores >= threshold
     """
     try:
-        import matplotlib.pyplot as plt
+        import plotly.graph_objects as go
     except Exception:
-        print("NOTE: matplotlib not available; skipping plots.")
+        print("NOTE: plotly not available; skipping interactive plots.")
         return
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Helper to extract data points where y is present
-    def points(ykey):
-        xs, ys, labels = [], [], []
-        for r in rows:
-            y = r.get(ykey)
-            if y is None:
+    metrics = [
+        ("avg_used_time_s", "Avg UsedTime (s) from NVT1-1.ener"),
+        ("sacct_elapsed_s", "Elapsed time (s) from sacct"),
+        ("sacct_cpu_s", "CPU time (s) from sacct"),
+        ("sacct_rss_gb", "Max RSS (GB) from sacct"),
+    ]
+
+    # ---------- 3D plots ----------
+    for key, label in metrics:
+        pts = [r for r in rows if r.get(key) is not None]
+        if len(pts) < 2:
+            continue
+
+        x = [r["mpi_ranks"] for r in pts]
+        y = [r["omp_threads"] for r in pts]
+        z = [r[key] for r in pts]
+        cores = [r["total_cores"] for r in pts]
+        names = [r["directory"] for r in pts]
+
+        scatter = go.Scatter3d(
+            x=x,
+            y=y,
+            z=z,
+            mode="markers",
+            marker=dict(
+                size=5,
+                color=cores,
+                colorscale="Viridis",
+                showscale=True,
+                colorbar=dict(title="Total cores"),
+            ),
+            text=names,
+            hovertemplate=(
+                "Dir: %{text}<br>"
+                "MPI: %{x}<br>"
+                "OpenMP threads: %{y}<br>"
+                f"{label}: %{z}<br>"
+                "Total cores: %{marker.color}<extra></extra>"
+            ),
+            name="points",
+        )
+
+        fig = go.Figure(data=[scatter])
+        fig.update_layout(
+            title=f"{label}<br><sup>X=MPI ranks, Y=OpenMP threads, Z=metric</sup>",
+            scene=dict(
+                xaxis_title="MPI ranks",
+                yaxis_title="OpenMP threads",
+                zaxis_title=label,
+            ),
+            margin=dict(l=0, r=0, b=0, t=60),
+        )
+
+        # Surface-like overlay (optional)
+        if len(pts) >= 6:
+            try:
+                X, Y, Z = _nearest_grid_surface(x, y, z, nx=35, ny=35)
+                surface = go.Surface(
+                    x=X,
+                    y=Y,
+                    z=Z,
+                    opacity=0.35,
+                    colorscale="Viridis",
+                    showscale=False,
+                    name="surface",
+                )
+                fig.add_trace(surface)
+            except Exception:
+                pass
+
+        out_html = out_dir / f"plot3d_{key}.html"
+        fig.write_html(out_html, include_plotlyjs="cdn")
+        print(f"  wrote {out_html}")
+
+    # ---------- 2D plots with toggles + dropdown ----------
+    unique_cores = sorted({r["total_cores"] for r in rows})
+    if not unique_cores:
+        return
+
+    for key, label in metrics:
+        pts = [r for r in rows if r.get(key) is not None]
+        if not pts:
+            continue
+
+        fig = go.Figure()
+        core_to_trace_index = {}
+
+        for c in unique_cores:
+            group = [r for r in pts if r["total_cores"] == c]
+            if not group:
                 continue
-            xs.append(r["total_cores"])
-            ys.append(y)
-            labels.append(r["directory"])
-        return xs, ys, labels
 
-    # 1) Avg UsedTime vs cores
-    xs, ys, _ = points("avg_used_time_s")
-    if xs:
-        plt.figure()
-        plt.scatter(xs, ys)
-        plt.xlabel("Total cores")
-        plt.ylabel("Average UsedTime (s) from NVT1-1.ener")
-        plt.title("CP2K: Average UsedTime vs Total cores")
-        plt.savefig(out_dir / "avg_used_time_vs_cores.png", dpi=200, bbox_inches="tight")
-        plt.close()
+            xvals = [c] * len(group)  # numeric x-axis
+            yvals = [r[key] for r in group]
+            text = [r["directory"] for r in group]
+            mpi = [r["mpi_ranks"] for r in group]
+            omp = [r["omp_threads"] for r in group]
 
-    # 2) sacct elapsed vs cores
-    xs, ys, _ = points("sacct_elapsed_s")
-    if xs:
-        plt.figure()
-        plt.scatter(xs, ys)
-        plt.xlabel("Total cores")
-        plt.ylabel("Elapsed time (s) from sacct")
-        plt.title("SLURM sacct: Elapsed vs Total cores")
-        plt.savefig(out_dir / "sacct_elapsed_vs_cores.png", dpi=200, bbox_inches="tight")
-        plt.close()
+            trace = go.Scatter(
+                x=xvals,
+                y=yvals,
+                mode="markers",
+                name=f"{c} cores",
+                text=text,
+                customdata=list(zip(mpi, omp)),
+                hovertemplate=(
+                    "Dir: %{text}<br>"
+                    "Total cores: %{x}<br>"
+                    "MPI: %{customdata[0]}<br>"
+                    "OpenMP threads: %{customdata[1]}<br>"
+                    f"{label}: %{y}<extra></extra>"
+                ),
+            )
+            fig.add_trace(trace)
+            core_to_trace_index[c] = len(fig.data) - 1
 
-    # 3) sacct cpu vs cores
-    xs, ys, _ = points("sacct_cpu_s")
-    if xs:
-        plt.figure()
-        plt.scatter(xs, ys)
-        plt.xlabel("Total cores")
-        plt.ylabel("CPU time (s) from sacct")
-        plt.title("SLURM sacct: CPU time vs Total cores")
-        plt.savefig(out_dir / "sacct_cpu_vs_cores.png", dpi=200, bbox_inches="tight")
-        plt.close()
+        buttons = []
+        buttons.append(dict(
+            label="Show all cores",
+            method="update",
+            args=[{"visible": [True] * len(fig.data)},
+                  {"title": f"{label} vs Total cores (all groups)"}],
+        ))
 
-    # 4) sacct RSS vs cores
-    xs, ys, _ = points("sacct_rss_gb")
-    if xs:
-        plt.figure()
-        plt.scatter(xs, ys)
-        plt.xlabel("Total cores")
-        plt.ylabel("Max RSS (GB) from sacct")
-        plt.title("SLURM sacct: Max RSS vs Total cores")
-        plt.savefig(out_dir / "sacct_rss_gb_vs_cores.png", dpi=200, bbox_inches="tight")
-        plt.close()
+        for thr in unique_cores:
+            full_vis = [False] * len(fig.data)
+            for c in unique_cores:
+                idx = core_to_trace_index.get(c)
+                if idx is None:
+                    continue
+                full_vis[idx] = (c >= thr)
+
+            buttons.append(dict(
+                label=f"Show cores ≥ {thr}",
+                method="update",
+                args=[{"visible": full_vis},
+                      {"title": f"{label} vs Total cores (cores ≥ {thr})"}],
+            ))
+
+        fig.update_layout(
+            title=f"{label} vs Total cores<br><sup>Toggle groups in legend or use dropdown filter</sup>",
+            xaxis_title="Total cores",
+            yaxis_title=label,
+            legend_title="Total cores group",
+            updatemenus=[dict(
+                type="dropdown",
+                x=1.02, y=1.0,
+                xanchor="left", yanchor="top",
+                buttons=buttons,
+            )],
+            margin=dict(l=70, r=260, t=80, b=70),
+        )
+
+        out_html = out_dir / f"plot2d_{key}_by_total_cores.html"
+        fig.write_html(out_html, include_plotlyjs="cdn")
+        print(f"  wrote {out_html}")
 
 
 # ------------------------------------------------------------
@@ -274,7 +405,7 @@ def make_plots(rows: list[dict], out_dir: Path):
 
 def run():
     parser = argparse.ArgumentParser(
-        description="Report CP2K benchmark results from benchmark directories"
+        description="Report CP2K benchmark results (interactive Plotly HTML plots)"
     )
     parser.add_argument(
         "--root",
@@ -289,7 +420,7 @@ def run():
     parser.add_argument(
         "--out",
         default="report",
-        help="Output directory for CSV and plots (default: report)",
+        help="Output directory for CSV and HTML plots (default: report)",
     )
     parser.add_argument(
         "--no-sacct",
@@ -349,19 +480,13 @@ def run():
             "sacct_rss_gb": sacct_rss,
         })
 
+    out_dir.mkdir(parents=True, exist_ok=True)
     write_csv(rows, out_csv)
-    make_plots(rows, out_dir)
+
+    # Plotly-only outputs (no matplotlib pngs)
+    make_plotly_plots(rows, out_dir)
 
     print("\nReport complete.")
-    print(f"  CSV : {out_csv}")
-    print(f"  Plots directory: {out_dir}")
-    print("  Plots written (if matplotlib available):")
-    for name in [
-        "avg_used_time_vs_cores.png",
-        "sacct_elapsed_vs_cores.png",
-        "sacct_cpu_vs_cores.png",
-        "sacct_rss_gb_vs_cores.png",
-    ]:
-        p = out_dir / name
-        if p.exists():
-            print(f"    - {p}")
+    print(f"  CSV:   {out_csv}")
+    print(f"  HTML plots directory: {out_dir}")
+    print("  Open the .html files in a browser (or via OOD file browser).")
