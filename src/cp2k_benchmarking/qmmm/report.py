@@ -4,7 +4,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
-from statistics import mean
+from statistics import mean, stdev
 
 try:
     from tqdm import tqdm
@@ -27,13 +27,10 @@ SLURM_OUT_RE = re.compile(r"^slurm_(?P<jobid>\d+)(?:_(?P<taskid>\d+))?\.out$")
 # NVT1-1.ener parsing
 # ------------------------------------------------------------
 
-def parse_nvt_ener_avg_used_time(path: Path) -> float | None:
+def parse_nvt_ener_used_times(path: Path) -> list[float] | None:
     """
-    Parse NVT1-1.ener and return average UsedTime[s] excluding step 0.
-
-    Returns:
-      - float average if valid rows exist (step > 0)
-      - None if file missing or contains no valid rows > 0
+    Parse NVT1-1.ener and return a list of UsedTime[s] values
+    excluding step 0. Returns None if file missing or no valid data.
     """
     if not path.is_file():
         return None
@@ -49,13 +46,11 @@ def parse_nvt_ener_avg_used_time(path: Path) -> float | None:
             if len(parts) < 2:
                 continue
 
-            # Step number is first column
             try:
                 step = int(parts[0])
             except ValueError:
                 continue
 
-            # UsedTime[s] is last column
             try:
                 used_time = float(parts[-1])
             except ValueError:
@@ -69,7 +64,23 @@ def parse_nvt_ener_avg_used_time(path: Path) -> float | None:
     if not used_times:
         return None
 
-    return mean(used_times)
+    return used_times
+
+
+def parse_nvt_ener_stats(path: Path) -> tuple[float, float] | None:
+    """
+    Return (mean, stddev) of UsedTime[s] excluding step 0.
+    Stddev is sample stddev if >=2 points, else 0.0.
+
+    Returns None if file missing or no valid data.
+    """
+    vals = parse_nvt_ener_used_times(path)
+    if not vals:
+        return None
+
+    mu = mean(vals)
+    sigma = stdev(vals) if len(vals) >= 2 else 0.0
+    return mu, sigma
 
 
 # ------------------------------------------------------------
@@ -80,8 +91,6 @@ def run_sacct(jobid: str, taskid: str | None = None):
     """
     Run `sacct --json` for a job id (and optional task id).
     If taskid is supplied, query jobid_taskid, else query jobid.
-
-    Returns parsed JSON (dict).
     """
     job_query = f"{jobid}_{taskid}" if taskid is not None else f"{jobid}"
 
@@ -179,10 +188,11 @@ def write_csv(rows: list[dict], out_csv: Path):
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "directory", "total_cores", "mpi_ranks", "omp_threads",
-        "avg_used_time_s",
+        "avg_used_time_s", "avg_used_time_std_s",
         "jobid", "taskid",
         "sacct_elapsed_s", "sacct_cpu_s", "sacct_rss_gb",
-        "cpu_eff_pct", "speedup",
+        "cpu_eff_pct",
+        "speedup",
     ]
     with out_csv.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
@@ -231,6 +241,7 @@ def _nearest_grid_surface(x, y, z, nx=35, ny=35):
 def make_plotly_plots(rows: list[dict], out_dir: Path):
     """
     3D + 2D interactive plots for ALL valid configurations.
+    (Not filtered to fastest-per-cores.)
     """
     try:
         import plotly.graph_objects as go
@@ -295,7 +306,6 @@ def make_plotly_plots(rows: list[dict], out_dir: Path):
             margin=dict(l=0, r=0, b=0, t=60),
         )
 
-        # Optional surface-like overlay
         if len(pts) >= 6:
             try:
                 X, Y, Z = _nearest_grid_surface(x, y, z, nx=35, ny=35)
@@ -396,13 +406,13 @@ def make_plotly_plots(rows: list[dict], out_dir: Path):
 
 
 # ------------------------------------------------------------
-# Best-per-total-cores 2x2 summary subplot
+# Best-per-total-cores 2x2 summary subplot (with stddev + toggle)
 # ------------------------------------------------------------
 
-def select_fastest_per_total_cores(rows: list[dict]) -> list:
+def select_fastest_per_total_cores(rows: list[dict]) -> list[dict]:
     """
     For each total_cores, select the row with the smallest avg_used_time_s.
-    Returns a new list with 1 row per total_cores (sorted by total_cores).
+    Returns 1 row per total_cores (sorted).
     """
     best = {}
     for r in rows:
@@ -417,8 +427,12 @@ def select_fastest_per_total_cores(rows: list[dict]) -> list:
 
 def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
     """
-    Big 2x2 subplot figure, ONLY using the fastest configuration
-    for each total_cores (fastest = min avg_used_time_s).
+    Big 2x2 subplot figure, ONLY using the fastest configuration per total_cores.
+    Adds:
+      - y-value + stddev in hover (where available)
+      - error bars (stddev) with a toggle (default OFF)
+      - CPU efficiency y-axis clamped 0..100
+      - extra spacing so labels don't overlap titles
     """
     try:
         import plotly.graph_objects as go
@@ -428,31 +442,49 @@ def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
         return
 
     out_dir.mkdir(parents=True, exist_ok=True)
-
     best_rows = select_fastest_per_total_cores(rows)
 
-    # Speedup baseline: fastest at 1 core
-    baseline_candidates = [
+    # Baseline for speedup (best 1-core)
+    base_candidates = [
         r for r in best_rows
         if r["total_cores"] == 1 and r.get("avg_used_time_s") is not None
     ]
-    baseline_time = min((r["avg_used_time_s"] for r in baseline_candidates), default=None)
+    base_time = min((r["avg_used_time_s"] for r in base_candidates), default=None)
+    base_std = None
+    if base_time is not None:
+        # if multiple 1-core best_rows can't happen (best_rows has 1 per core),
+        # but base_std comes from that single selected row
+        for r in best_rows:
+            if r["total_cores"] == 1:
+                base_std = r.get("avg_used_time_std_s")
+                break
 
+    # Compute best speedup and its stddev (propagation) where possible
     for r in best_rows:
         t = r.get("avg_used_time_s")
-        if baseline_time is not None and t is not None and t > 0:
-            r["speedup_best"] = baseline_time / t
-        else:
-            r["speedup_best"] = None
+        s = None
+        s_std = None
 
-    # Increased spacing to prevent overlap of labels/titles
+        if base_time is not None and t is not None and t > 0:
+            s = base_time / t
+
+            # error propagation if stddevs exist
+            t_std = r.get("avg_used_time_std_s")
+            if (
+                base_std is not None and t_std is not None
+                and base_time > 0 and t > 0
+            ):
+                # σ_s = s * sqrt((σ_base/base)^2 + (σ_t/t)^2)
+                s_std = s * (((base_std / base_time) ** 2 + (t_std / t) ** 2) ** 0.5)
+
+        r["speedup_best"] = s
+        r["speedup_best_std"] = s_std
+
     fig = make_subplots(
         rows=2,
         cols=2,
-        specs=[
-            [{"type": "xy"}, {"type": "xy"}],
-            [{"type": "xy"}, {"type": "xy"}],
-        ],
+        specs=[[{"type": "xy"}, {"type": "xy"}],
+               [{"type": "xy"}, {"type": "xy"}]],
         subplot_titles=[
             "CPU efficiency (%) (best per total cores)",
             "Max RSS (GB) (best per total cores)",
@@ -463,7 +495,10 @@ def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
         horizontal_spacing=0.08,
     )
 
-    def add_best_metric(row, col, key, ytitle, show_colorbar=False, y_range=None):
+    # We'll keep track of trace indices so we can toggle error bars
+    trace_indices = []
+
+    def add_best_metric(row, col, key, ytitle, std_key=None, show_colorbar=False, y_range=None):
         pts = [r for r in best_rows if r.get(key) is not None]
         if not pts:
             return
@@ -474,6 +509,17 @@ def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
         mpi = [r["mpi_ranks"] for r in pts]
         omp = [r["omp_threads"] for r in pts]
 
+        # stddev array (numeric) for error bars
+        if std_key is not None:
+            std_vals = [(r.get(std_key) or 0.0) for r in pts]
+            std_strs = [
+                (f"{r.get(std_key):.6g}" if r.get(std_key) is not None else "N/A")
+                for r in pts
+            ]
+        else:
+            std_vals = [0.0] * len(pts)
+            std_strs = ["N/A"] * len(pts)
+
         marker = dict(
             size=8,
             color=mpi,
@@ -483,26 +529,31 @@ def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
         if show_colorbar:
             marker["colorbar"] = dict(title="MPI ranks")
 
-        # Short hover: remove the long ytitle/value line (as requested)
-        fig.add_trace(
-            go.Scatter(
-                x=x,
-                y=y,
-                mode="markers+lines",
-                marker=marker,
-                text=text,
-                customdata=list(zip(mpi, omp)),
-                hovertemplate=(
-                    "Dir: %{text}<br>"
-                    "Total cores: %{x}<br>"
-                    "MPI: %{customdata[0]}<br>"
-                    "OpenMP threads: %{customdata[1]}<extra></extra>"
-                ),
-                showlegend=False,
+        tr = go.Scatter(
+            x=x,
+            y=y,
+            mode="markers+lines",
+            marker=marker,
+            text=text,
+            customdata=list(zip(mpi, omp, std_strs)),
+            error_y=dict(
+                type="data",
+                array=std_vals,
+                visible=False,   # default OFF (your request)
             ),
-            row=row,
-            col=col,
+            hovertemplate=(
+                "Dir: %{text}<br>"
+                "Total cores: %{x}<br>"
+                "MPI: %{customdata[0]}<br>"
+                "OpenMP threads: %{customdata[1]}<br>"
+                "Value: %{y}<br>"
+                "Std dev: %{customdata[2]}<extra></extra>"
+            ),
+            showlegend=False,
         )
+
+        fig.add_trace(tr, row=row, col=col)
+        trace_indices.append(len(fig.data) - 1)
 
         fig.update_xaxes(title_text="Total cores", row=row, col=col)
         fig.update_yaxes(title_text=ytitle, row=row, col=col)
@@ -510,16 +561,53 @@ def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
         if y_range is not None:
             fig.update_yaxes(range=y_range, row=row, col=col)
 
-    # Clamp CPU efficiency y-axis to 0..100
-    add_best_metric(1, 1, "cpu_eff_pct", "CPU efficiency (%)", show_colorbar=True, y_range=[0, 100])
-    add_best_metric(1, 2, "sacct_rss_gb", "Max RSS (GB)")
-    add_best_metric(2, 1, "avg_used_time_s", "Average UsedTime (s)")
-    add_best_metric(2, 2, "speedup_best", "Speedup (T1/Tp)")
+    # CPU efficiency: clamp 0..100, no stddev
+    add_best_metric(
+        1, 1,
+        "cpu_eff_pct",
+        "CPU efficiency (%)",
+        std_key=None,
+        show_colorbar=True,
+        y_range=[0, 100],
+    )
 
+    # Memory usage: no stddev
+    add_best_metric(1, 2, "sacct_rss_gb", "Max RSS (GB)", std_key=None)
+
+    # Time: stddev from ener
+    add_best_metric(2, 1, "avg_used_time_s", "Average UsedTime (s)", std_key="avg_used_time_std_s")
+
+    # Speedup: stddev via propagation
+    add_best_metric(2, 2, "speedup_best", "Speedup (T1/Tp)", std_key="speedup_best_std")
+
+    # Toggle buttons for error bars across all traces
+    ntraces = len(fig.data)
     fig.update_layout(
+        updatemenus=[
+            dict(
+                type="buttons",
+                direction="left",
+                x=0.5,
+                y=1.18,
+                xanchor="center",
+                yanchor="top",
+                buttons=[
+                    dict(
+                        label="Error bars: OFF",
+                        method="restyle",
+                        args=[{"error_y.visible": [False] * ntraces}],
+                    ),
+                    dict(
+                        label="Error bars: ON",
+                        method="restyle",
+                        args=[{"error_y.visible": [True] * ntraces}],
+                    ),
+                ],
+            )
+        ],
         title="CP2K Benchmark Summary (FASTEST per total cores)",
         height=950,
-        margin=dict(l=70, r=40, t=120, b=70),
+        margin=dict(l=70, r=40, t=140, b=70),
     )
 
     out_html = out_dir / "summary_2x2_best_per_total_cores.html"
@@ -566,13 +654,9 @@ def run():
     if not root.is_dir():
         raise RuntimeError(f"Benchmark root not found: {root}")
 
-    # Find matching benchmark directories
-    sim_dirs = []
-    for p in root.iterdir():
-        if p.is_dir() and DIR_RE.match(p.name):
-            sim_dirs.append(p)
-
+    sim_dirs = [p for p in root.iterdir() if p.is_dir() and DIR_RE.match(p.name)]
     sim_dirs = sorted(sim_dirs, key=lambda p: p.name)
+
     if not sim_dirs:
         print(f"No benchmark directories found under: {root}")
         return
@@ -584,18 +668,17 @@ def run():
     rows = []
     skipped = []
 
-    # Only include runs with valid ener data
     for d in iterator:
         ener_path = d / args.ener_file
 
-        if not ener_path.is_file():
-            skipped.append((d.name, f"missing {args.ener_file}"))
+        # Only include runs with valid ener stats
+        stats = parse_nvt_ener_stats(ener_path)
+        if stats is None:
+            reason = f"missing {args.ener_file}" if not ener_path.is_file() else f"no usable UsedTime rows in {args.ener_file}"
+            skipped.append((d.name, reason))
             continue
 
-        avg_used_time = parse_nvt_ener_avg_used_time(ener_path)
-        if avg_used_time is None:
-            skipped.append((d.name, f"no usable UsedTime rows in {args.ener_file}"))
-            continue
+        avg_used_time, avg_used_time_std = stats
 
         m = DIR_RE.match(d.name)
         total_cores = int(m.group("cores"))
@@ -625,16 +708,17 @@ def run():
             "mpi_ranks": mpi_ranks,
             "omp_threads": omp_threads,
             "avg_used_time_s": avg_used_time,
+            "avg_used_time_std_s": avg_used_time_std,
             "jobid": jobid,
             "taskid": taskid,
             "sacct_elapsed_s": sacct_elapsed,
             "sacct_cpu_s": sacct_cpu,
             "sacct_rss_gb": sacct_rss,
             "cpu_eff_pct": cpu_eff,
-            "speedup": None,  # filled below
+            "speedup": None,  # filled below (per-row baseline speedup)
         })
 
-    # Compute per-row speedup relative to fastest 1-core avg_used_time (if present)
+    # Per-row speedup baseline: fastest 1-core mean time among ALL rows
     baseline_candidates = [r for r in rows if r["total_cores"] == 1 and r.get("avg_used_time_s") is not None]
     baseline_time = min((r["avg_used_time_s"] for r in baseline_candidates), default=None)
     if baseline_time is not None and baseline_time > 0:
@@ -648,10 +732,10 @@ def run():
     write_skipped(skipped, skipped_txt)
 
     if rows:
-        # Big plot uses ONLY fastest per total_cores
+        # Big 2x2: fastest-per-total-cores + stddev hover + toggleable error bars
         make_big_summary_subplot_fastest(rows, out_dir)
 
-        # These show ALL valid configs (useful for MPI/OMP tuning)
+        # 3D/2D plots still show ALL configurations (useful for MPI/OMP tuning)
         make_plotly_plots(rows, out_dir)
 
     print("\nReport complete.")
