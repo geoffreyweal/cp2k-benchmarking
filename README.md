@@ -261,18 +261,10 @@ Total requested walltime: 6d 02:30:00 (529,200 seconds)
 The `report` subcommand analyses completed CP2K benchmark runs and produces **interactive, publication‑quality performance summaries**. It is designed to work directly on the directory structure created by `qmmm setup` and intentionally ignores failed or incomplete runs.
 
 ```Shell
-cp2k-benchmarking qmmm report
-```
-
----
-
-### Command‑line options
-
-```Shell
 cp2k-benchmarking qmmm report [options]
 ```
 
-Common options:
+options:
 
 - `--root PATH`
     - Root benchmarking directory (default: `CP2K_Benchmarking`)
