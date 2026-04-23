@@ -256,7 +256,7 @@ Total requested walltime: 6d 02:30:00 (529,200 seconds)
 
 ---
 
-# Reporting and Analysis (`cp2k-benchmarking qmmm report`)
+## Reporting and Analysis (`cp2k-benchmarking qmmm report`)
 
 The `report` subcommand analyses completed CP2K benchmark runs and produces **interactive, publication‑quality performance summaries**. It is designed to work directly on the directory structure created by `qmmm setup` and intentionally ignores failed or incomplete runs.
 
@@ -266,11 +266,11 @@ cp2k-benchmarking qmmm report
 
 ---
 
-## What the report does
+### What the report does
 
 When you run `cp2k-benchmarking qmmm report`, the tool performs the following steps:
 
-### 1. Scan benchmark directories
+#### 1. Scan benchmark directories
 
 - Searches under `CP2K_Benchmarking/` (or `--root PATH` if specified)
 - Only considers directories matching the naming scheme:
@@ -286,7 +286,7 @@ This naming convention is required so that the tool can infer:
 
 ---
 
-### 2. Filter out failed runs (strict by design)
+#### 2. Filter out failed runs (strict by design)
 
 A run is considered **valid only if** it contains a usable CP2K energy file:
 
@@ -309,7 +309,7 @@ This ensures that all reported metrics correspond to *completed and meaningful* 
 
 ---
 
-### 3. Extract CP2K timing statistics
+#### 3. Extract CP2K timing statistics
 
 From `NVT1-1.ener` the report computes:
 
@@ -320,7 +320,7 @@ These values are used as the primary performance metric throughout the report.
 
 ---
 
-### 4. Extract SLURM accounting data (optional)
+#### 4. Extract SLURM accounting data (optional)
 
 If available, SLURM accounting data is queried using:
 
@@ -344,9 +344,9 @@ cp2k-benchmarking qmmm report --no-sacct
 
 ---
 
-### 5. Compute derived performance metrics
+#### 5. Compute derived performance metrics
 
-#### CPU efficiency (%)
+##### CPU efficiency (%)
 
 ```text
 CPU efficiency = CPU_time / (elapsed_time × total_cores) × 100
@@ -354,7 +354,7 @@ CPU efficiency = CPU_time / (elapsed_time × total_cores) × 100
 
 This value is clamped to the range **0–100%** in plots.
 
-#### Speedup
+##### Speedup
 
 ```text
 Speedup(p) = T₁ / Tₚ
@@ -366,11 +366,11 @@ Where:
 
 ---
 
-## Output files
+### Output files
 
 All outputs are written to the directory specified by `--out` (default: `report/`).
 
-### Machine‑readable summary
+#### Machine‑readable summary
 
 ```text
 report/results.csv
@@ -378,11 +378,11 @@ report/results.csv
 
 ---
 
-## Interactive plots (HTML)
+### Interactive plots (HTML)
 
 All plots are written as **self‑contained HTML files**. No server is required.
 
-### Big 2×2 summary plot (best‑per‑cores)
+#### Big 2×2 summary plot (best‑per‑cores)
 
 ```text
 report/summary_2x2_best_per_total_cores.html
