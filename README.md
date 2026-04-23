@@ -256,126 +256,159 @@ Total requested walltime: 6d 02:30:00 (529,200 seconds)
 
 ---
 
-Reporting and Analysis (cp2k-benchmarking qmmm report)
+# Reporting and Analysis (`cp2k-benchmarking qmmm report`)
 
-The `report` subcommand analyses completed CP2K benchmark runs and produces interactive, publication-quality performance summaries. It is designed to work directly on the directory structure created by `qmmm setup` and intentionally ignores failed or incomplete runs.
+The `report` subcommand analyses completed CP2K benchmark runs and produces **interactive, publication‑quality performance summaries**. It is designed to work directly on the directory structure created by `qmmm setup` and intentionally ignores failed or incomplete runs.
 
-Command:
-  cp2k-benchmarking qmmm report
-
----
-
-WHAT THE REPORT DOES
-
-1. Scan benchmark directories
-   - Searches under CP2K_Benchmarking/ (or --root PATH)
-   - Only directories matching:
-       <TOTAL>_Cores_<MPI>_MPI_<OMP>_OpenMPI
-
-2. Filter out failed runs (strict)
-   - A run is valid only if NVT1-1.ener exists
-   - Must contain at least one timestep after step 0
-   - Invalid runs are excluded entirely
-   - Excluded runs are written to:
-       report/skipped_missing_ener.txt
-
-3. Extract CP2K timing statistics (from NVT1-1.ener)
-   - Average UsedTime[s] (excluding step 0)
-   - Standard deviation of UsedTime[s]
-
-4. Extract SLURM accounting data (optional)
-   - Uses: sacct --json
-   - Job ID inferred from slurm_*.out
-   - Extracted:
-       * elapsed wall time (s)
-       * total CPU time (s)
-       * max RSS (GB)
-   - Disable with: --no-sacct
-
-5. Compute derived metrics
-   - CPU efficiency (%):
-       cpu_time / (elapsed_time * total_cores) * 100
-   - Speedup:
-       T1 / Tp
-     where T1 is the fastest valid 1-core run
-
-6. Write machine-readable output
-   - report/results.csv
+```bash
+cp2k-benchmarking qmmm report
+```
 
 ---
 
-INTERACTIVE OUTPUTS (HTML)
+## What the report does
 
-All plots are self-contained HTML files.
+When you run `cp2k-benchmarking qmmm report`, the tool performs the following steps:
 
-1. Big 2x2 summary plot (best-per-cores)
-   File:
-     report/summary_2x2_best_per_total_cores.html
+### 1. Scan benchmark directories
 
-   Shows only the fastest configuration for each total core count.
+- Searches under `CP2K_Benchmarking/` (or `--root PATH` if specified)
+- Only considers directories matching the naming scheme:
 
-   Panels:
-     - CPU efficiency (%) [0-100]
-     - Max RSS (GB)
-     - Average UsedTime (s)
-     - Speedup (T1/Tp)
+```text
+<TOTAL>_Cores_<MPI>_MPI_<OMP>_OpenMPI
+```
 
-   Features:
-     - Hover shows directory, cores, MPI, OpenMP, value, stddev
-     - Error bars (±1σ) toggle (OFF by default)
-     - Theoretical reference lines:
-         * Time: T1 / cores
-         * Speedup: y = x
-       (theoretical lines never show error bars)
-
-2. 3D plots (MPI x OpenMP x metric)
-   Files:
-     report/plot3d_<metric>.html
-
-   Axes:
-     X: MPI ranks
-     Y: OpenMP threads
-     Z: metric value
-
-3. 2D plots (all configurations)
-   Files:
-     report/plot2d_<metric>_by_total_cores.html
-        
-   Features:
-     - X axis: total cores
-     - One trace per core count
-     - Legend toggles
-     - Dropdown filter for cores >= threshold
+This naming convention is required so that the tool can infer:
+- total core count
+- MPI ranks
+- OpenMP threads
 
 ---
 
-COMMAND-LINE OPTIONS
+### 2. Filter out failed runs (strict by design)
 
-  --root PATH      Root benchmarking directory (default: CP2K_Benchmarking)
-  --ener-file FILE Energy file to parse (default: NVT1-1.ener)
-  --out DIR        Output directory (default: report)
-  --no-sacct       Skip SLURM accounting queries
+A run is considered **valid only if** it contains a usable CP2K energy file:
+
+```text
+NVT1-1.ener
+```
+
+Rules:
+- The file must exist
+- It must contain at least one timestep **after step 0**
+- Runs that do not meet these conditions are **excluded entirely**
+
+Excluded runs are recorded in:
+
+```text
+report/skipped_missing_ener.txt
+```
+
+This ensures that all reported metrics correspond to *completed and meaningful* CP2K calculations.
 
 ---
 
-TYPICAL WORKFLOW
+### 3. Extract CP2K timing statistics
 
-  cp2k-benchmarking qmmm setup ...
-  cp2k-benchmarking submit
-  cp2k-benchmarking qmmm report
+From `NVT1-1.ener` the report computes:
 
-  Open report/summary_2x2_best_per_total_cores.html in a browser
+- **Average `UsedTime[s]`**, excluding step 0
+- **Standard deviation** of `UsedTime[s]`
+
+These values are used as the primary performance metric throughout the report.
 
 ---
 
-DESIGN PHILOSOPHY
+### 4. Extract SLURM accounting data (optional)
 
-- Strict: failed runs excluded
-- Reproducible: derived from files on disk
-- Transparent: CSV always written
-- Interactive: hover, toggles, filtering
+If available, SLURM accounting data is queried using:
 
-Suitable for scaling studies, MPI/OpenMP tuning, regression testing, and HPC documentation.
+```bash
+sacct --json
+```
+
+The job ID is inferred from `slurm_*.out` files in each benchmark directory.
+
+Extracted quantities:
+
+- Elapsed wall time (s)
+- Total CPU time (s)
+- Maximum resident set size (RSS, GB)
+
+You can disable SLURM queries if `sacct` is unavailable:
+
+```bash
+cp2k-benchmarking qmmm report --no-sacct
+```
+
+---
+
+### 5. Compute derived performance metrics
+
+#### CPU efficiency (%)
+
+```text
+CPU efficiency = CPU_time / (elapsed_time × total_cores) × 100
+```
+
+This value is clamped to the range **0–100%** in plots.
+
+#### Speedup
+
+```text
+Speedup(p) = T₁ / Tₚ
+```
+
+Where:
+- `T₁` is the **fastest valid 1‑core run** (minimum average `UsedTime[s]`)
+- `Tₚ` is the average `UsedTime[s]` at `p` total cores
+
+---
+
+## Output files
+
+All outputs are written to the directory specified by `--out` (default: `report/`).
+
+### Machine‑readable summary
+
+```text
+report/results.csv
+```
+
+---
+
+## Interactive plots (HTML)
+
+All plots are written as **self‑contained HTML files**. No server is required.
+
+### Big 2×2 summary plot (best‑per‑cores)
+
+```text
+report/summary_2x2_best_per_total_cores.html
+```
+
+This figure shows **only the fastest configuration for each total core count**.
+
+Subplots:
+- CPU efficiency (%)
+- Maximum RSS (GB)
+- Average UsedTime (s)
+- Speedup (T₁ / Tₚ)
+
+Features:
+- Error bars (±1σ) toggle (OFF by default)
+- Ideal reference lines: `T₁ / cores` and `y = x`
+
+---
+
+## Typical workflow
+
+```bash
+cp2k-benchmarking qmmm setup ...
+cp2k-benchmarking submit
+cp2k-benchmarking qmmm report
+```
 
 
 ---
