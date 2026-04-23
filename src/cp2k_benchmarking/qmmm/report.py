@@ -33,7 +33,7 @@ def parse_nvt_ener_avg_used_time(path: Path) -> float | None:
 
     Returns:
       - float average if valid rows exist (step > 0)
-      - None if file is missing or contains no valid rows > 0
+      - None if file missing or contains no valid rows > 0
     """
     if not path.is_file():
         return None
@@ -49,19 +49,16 @@ def parse_nvt_ener_avg_used_time(path: Path) -> float | None:
             if len(parts) < 2:
                 continue
 
-            # Step Nr is first column
             try:
                 step = int(parts[0])
             except ValueError:
                 continue
 
-            # UsedTime[s] is last column
             try:
                 used_time = float(parts[-1])
             except ValueError:
                 continue
 
-            # Skip step 0 explicitly
             if step == 0:
                 continue
 
@@ -74,15 +71,13 @@ def parse_nvt_ener_avg_used_time(path: Path) -> float | None:
 
 
 # ------------------------------------------------------------
-# SLURM sacct helpers (based on your algorithm)
+# SLURM sacct helpers
 # ------------------------------------------------------------
 
 def run_sacct(jobid: str, taskid: str | None = None):
     """
     Run `sacct --json` for a job id (and optional task id).
     If taskid is supplied, query jobid_taskid, else query jobid.
-
-    Returns parsed JSON (dict).
     """
     job_query = f"{jobid}_{taskid}" if taskid is not None else f"{jobid}"
 
@@ -101,9 +96,6 @@ def parse_sacct_data(data):
       * elapsed time (s)
       * total CPU time (s)
       * maximum RSS (GB)
-
-    Uses your intended structure, but with defensive guards for
-    site/version differences.
     """
     jobs = data.get("jobs", [])
     if not jobs:
@@ -183,8 +175,10 @@ def write_csv(rows: list[dict], out_csv: Path):
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "directory", "total_cores", "mpi_ranks", "omp_threads",
-        "avg_used_time_s", "jobid", "taskid",
-        "sacct_elapsed_s", "sacct_cpu_s", "sacct_rss_gb"
+        "avg_used_time_s",
+        "jobid", "taskid",
+        "sacct_elapsed_s", "sacct_cpu_s", "sacct_rss_gb",
+        "cpu_eff_pct", "speedup",
     ]
     with out_csv.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
@@ -194,9 +188,6 @@ def write_csv(rows: list[dict], out_csv: Path):
 
 
 def write_skipped(skipped: list[tuple[str, str]], out_path: Path):
-    """
-    Write a list of (directory_name, reason) entries.
-    """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as f:
         for d, reason in skipped:
@@ -204,15 +195,13 @@ def write_skipped(skipped: list[tuple[str, str]], out_path: Path):
 
 
 # ------------------------------------------------------------
-# Plotly plotting (interactive HTML)
+# Plotly plotting
 # ------------------------------------------------------------
 
 def _nearest_grid_surface(x, y, z, nx=35, ny=35):
     """
-    Create a surface-like grid from scattered (x,y,z) points using
-    nearest-neighbour assignment (no SciPy required).
-
-    Returns (Xgrid, Ygrid, Zgrid) suitable for plotly go.Surface.
+    Create a surface-like grid from scattered points using nearest-neighbour fill.
+    No SciPy required.
     """
     import numpy as np
 
@@ -220,11 +209,8 @@ def _nearest_grid_surface(x, y, z, nx=35, ny=35):
     y = np.asarray(y, dtype=float)
     z = np.asarray(z, dtype=float)
 
-    xmin, xmax = float(x.min()), float(x.max())
-    ymin, ymax = float(y.min()), float(y.max())
-
-    xi = np.linspace(xmin, xmax, nx)
-    yi = np.linspace(ymin, ymax, ny)
+    xi = np.linspace(float(x.min()), float(x.max()), nx)
+    yi = np.linspace(float(y.min()), float(y.max()), ny)
     X, Y = np.meshgrid(xi, yi)
 
     Z = np.empty_like(X, dtype=float)
@@ -240,12 +226,8 @@ def _nearest_grid_surface(x, y, z, nx=35, ny=35):
 
 def make_plotly_plots(rows: list[dict], out_dir: Path):
     """
-    Generate interactive Plotly HTML plots:
-
-    - 3D: MPI vs OpenMP vs metric (scatter + optional surface-like overlay)
-    - 2D: total_cores vs metric with:
-          * legend toggles per total_cores group
-          * dropdown filter to show only cores >= threshold
+    3D + 2D interactive plots for ALL valid configurations.
+    (This is unchanged behavior.)
     """
     try:
         import plotly.graph_objects as go
@@ -256,10 +238,12 @@ def make_plotly_plots(rows: list[dict], out_dir: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     metrics = [
-        ("avg_used_time_s", "Avg UsedTime (s) from NVT1-1.ener"),
-        ("sacct_elapsed_s", "Elapsed time (s) from sacct"),
-        ("sacct_cpu_s", "CPU time (s) from sacct"),
-        ("sacct_rss_gb", "Max RSS (GB) from sacct"),
+        ("avg_used_time_s", "Avg UsedTime (s)"),
+        ("sacct_elapsed_s", "Elapsed time (s)"),
+        ("sacct_cpu_s", "CPU time (s)"),
+        ("sacct_rss_gb", "Max RSS (GB)"),
+        ("cpu_eff_pct", "CPU efficiency (%)"),
+        ("speedup", "Speedup (T1 / Tp)"),
     ]
 
     # ---------- 3D plots ----------
@@ -308,20 +292,18 @@ def make_plotly_plots(rows: list[dict], out_dir: Path):
             margin=dict(l=0, r=0, b=0, t=60),
         )
 
-        # Surface-like overlay (optional)
         if len(pts) >= 6:
             try:
                 X, Y, Z = _nearest_grid_surface(x, y, z, nx=35, ny=35)
-                surface = go.Surface(
-                    x=X,
-                    y=Y,
-                    z=Z,
-                    opacity=0.35,
-                    colorscale="Viridis",
-                    showscale=False,
-                    name="surface",
+                fig.add_trace(
+                    go.Surface(
+                        x=X, y=Y, z=Z,
+                        opacity=0.35,
+                        colorscale="Viridis",
+                        showscale=False,
+                        name="surface",
+                    )
                 )
-                fig.add_trace(surface)
             except Exception:
                 pass
 
@@ -331,9 +313,6 @@ def make_plotly_plots(rows: list[dict], out_dir: Path):
 
     # ---------- 2D plots with toggles + dropdown ----------
     unique_cores = sorted({r["total_cores"] for r in rows})
-    if not unique_cores:
-        return
-
     for key, label in metrics:
         pts = [r for r in rows if r.get(key) is not None]
         if not pts:
@@ -347,55 +326,53 @@ def make_plotly_plots(rows: list[dict], out_dir: Path):
             if not group:
                 continue
 
-            xvals = [c] * len(group)  # numeric x-axis
+            xvals = [c] * len(group)
             yvals = [r[key] for r in group]
             text = [r["directory"] for r in group]
             mpi = [r["mpi_ranks"] for r in group]
             omp = [r["omp_threads"] for r in group]
 
-            trace = go.Scatter(
-                x=xvals,
-                y=yvals,
-                mode="markers",
-                name=f"{c} cores",
-                text=text,
-                customdata=list(zip(mpi, omp)),
-                hovertemplate=(
-                    "Dir: %{text}<br>"
-                    "Total cores: %{x}<br>"
-                    "MPI: %{customdata[0]}<br>"
-                    "OpenMP threads: %{customdata[1]}<br>"
-                    f"{label}: %{y}<extra></extra>"
-                ),
+            fig.add_trace(
+                go.Scatter(
+                    x=xvals,
+                    y=yvals,
+                    mode="markers",
+                    name=f"{c} cores",
+                    text=text,
+                    customdata=list(zip(mpi, omp)),
+                    hovertemplate=(
+                        "Dir: %{text}<br>"
+                        "Total cores: %{x}<br>"
+                        "MPI: %{customdata[0]}<br>"
+                        "OpenMP threads: %{customdata[1]}<br>"
+                        f"{label}: %{y}<extra></extra>"
+                    ),
+                )
             )
-            fig.add_trace(trace)
             core_to_trace_index[c] = len(fig.data) - 1
 
-        buttons = []
-        buttons.append(dict(
-            label="Show all cores",
-            method="update",
-            args=[{"visible": [True] * len(fig.data)},
-                  {"title": f"{label} vs Total cores (all groups)"}],
-        ))
+        buttons = [{
+            "label": "Show all cores",
+            "method": "update",
+            "args": [{"visible": [True] * len(fig.data)},
+                     {"title": f"{label} vs Total cores (all groups)"}],
+        }]
 
         for thr in unique_cores:
-            full_vis = [False] * len(fig.data)
+            vis = [False] * len(fig.data)
             for c in unique_cores:
                 idx = core_to_trace_index.get(c)
-                if idx is None:
-                    continue
-                full_vis[idx] = (c >= thr)
-
-            buttons.append(dict(
-                label=f"Show cores ≥ {thr}",
-                method="update",
-                args=[{"visible": full_vis},
-                      {"title": f"{label} vs Total cores (cores ≥ {thr})"}],
-            ))
+                if idx is not None:
+                    vis[idx] = (c >= thr)
+            buttons.append({
+                "label": f"Show cores ≥ {thr}",
+                "method": "update",
+                "args": [{"visible": vis},
+                         {"title": f"{label} vs Total cores (cores ≥ {thr})"}],
+            })
 
         fig.update_layout(
-            title=f"{label} vs Total cores<br><sup>Toggle groups in legend or use dropdown filter</sup>",
+            title=f"{label} vs Total cores<br><sup>Toggle groups in legend or filter via dropdown</sup>",
             xaxis_title="Total cores",
             yaxis_title=label,
             legend_title="Total cores group",
@@ -411,6 +388,124 @@ def make_plotly_plots(rows: list[dict], out_dir: Path):
         out_html = out_dir / f"plot2d_{key}_by_total_cores.html"
         fig.write_html(out_html, include_plotlyjs="cdn")
         print(f"  wrote {out_html}")
+
+
+def select_fastest_per_total_cores(rows: list[dict]) -> list[dict]:
+    """
+    For each total_cores, select the row with the smallest avg_used_time_s.
+    Returns a new list with 1 row per total_cores.
+    """
+    best = {}
+    for r in rows:
+        t = r.get("avg_used_time_s")
+        if t is None:
+            continue
+        c = r["total_cores"]
+        if c not in best or t < best[c]["avg_used_time_s"]:
+            best[c] = r
+    return [best[c] for c in sorted(best.keys())]
+
+
+def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
+    """
+    Big 2x2 subplot figure, but ONLY using the fastest configuration
+    for each total_cores.
+    """
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+    except Exception:
+        print("NOTE: plotly not available; skipping summary subplot.")
+        return
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    best_rows = select_fastest_per_total_cores(rows)
+
+    # Speedup baseline: fastest at 1 core (must exist to compute speedup)
+    baseline_candidates = [r for r in best_rows if r["total_cores"] == 1 and r.get("avg_used_time_s") is not None]
+    baseline_time = min((r["avg_used_time_s"] for r in baseline_candidates), default=None)
+
+    for r in best_rows:
+        t = r.get("avg_used_time_s")
+        if baseline_time is not None and t is not None and t > 0:
+            r["speedup_best"] = baseline_time / t
+        else:
+            r["speedup_best"] = None
+
+    fig = make_subplots(
+        rows=2,
+        cols=2,
+        specs=[
+            [{"type": "xy"}, {"type": "xy"}],
+            [{"type": "xy"}, {"type": "xy"}],
+        ],
+        subplot_titles=[
+            "CPU efficiency (%) (best per cores)", "Max RSS (GB) (best per cores)",
+            "Average UsedTime (s) (best per cores)", "Speedup T1/Tp (best per cores)",
+        ],
+        vertical_spacing=0.06,
+        horizontal_spacing=0.06,
+    )
+
+    def add_best_metric(row, col, key, ytitle, show_colorbar=False):
+        pts = [r for r in best_rows if r.get(key) is not None]
+        if not pts:
+            return
+
+        x = [r["total_cores"] for r in pts]
+        y = [r[key] for r in pts]
+        text = [r["directory"] for r in pts]
+        mpi = [r["mpi_ranks"] for r in pts]
+        omp = [r["omp_threads"] for r in pts]
+
+        marker = dict(
+            size=8,
+            color=mpi,
+            colorscale="Viridis",
+            showscale=show_colorbar,
+        )
+        if show_colorbar:
+            marker["colorbar"] = dict(title="MPI ranks")
+
+        fig.add_trace(
+            go.Scatter(
+                x=x,
+                y=y,
+                mode="markers+lines",
+                marker=marker,
+                text=text,
+                customdata=list(zip(mpi, omp)),
+                hovertemplate=(
+                    "Dir: %{text}<br>"
+                    "Total cores: %{x}<br>"
+                    "MPI: %{customdata[0]}<br>"
+                    "OpenMP threads: %{customdata[1]}<br>"
+                    f"{ytitle}: %{y}<extra></extra>"
+                ),
+                showlegend=False,
+            ),
+            row=row,
+            col=col,
+        )
+
+        fig.update_xaxes(title_text="Total cores", row=row, col=col)
+        fig.update_yaxes(title_text=ytitle, row=row, col=col)
+
+    add_best_metric(1, 1, "cpu_eff_pct", "CPU efficiency (%)", show_colorbar=True)
+    add_best_metric(1, 2, "sacct_rss_gb", "Max RSS (GB)")
+    add_best_metric(2, 1, "avg_used_time_s", "Average UsedTime (s)")
+    add_best_metric(2, 2, "speedup_best", "Speedup (T1/Tp)")
+
+    fig.update_layout(
+        title="CP2K Benchmark Summary (FASTEST per total cores)",
+        height=900,
+        margin=dict(l=70, r=40, t=90, b=60),
+    )
+
+    out_html = out_dir / "summary_2x2_best_per_total_cores.html"
+    fig.write_html(out_html, include_plotlyjs="cdn")
+    print(f"  wrote {out_html}")
 
 
 # ------------------------------------------------------------
@@ -452,7 +547,6 @@ def run():
     if not root.is_dir():
         raise RuntimeError(f"Benchmark root not found: {root}")
 
-    # Find matching benchmark directories
     sim_dirs = []
     for p in root.iterdir():
         if p.is_dir() and DIR_RE.match(p.name):
@@ -471,19 +565,15 @@ def run():
     rows = []
     skipped = []
 
+    # Only include runs with valid ener data
     for d in iterator:
         ener_path = d / args.ener_file
 
-        # ------------------------------------------------------------
-        # NEW RULE: only include runs that have the .ener file
-        # ------------------------------------------------------------
         if not ener_path.is_file():
             skipped.append((d.name, f"missing {args.ener_file}"))
             continue
 
         avg_used_time = parse_nvt_ener_avg_used_time(ener_path)
-
-        # If file exists but contains no usable steps beyond 0, treat as failed too
         if avg_used_time is None:
             skipped.append((d.name, f"no usable UsedTime rows in {args.ener_file}"))
             continue
@@ -496,8 +586,19 @@ def run():
         jobid, taskid = find_slurm_out_jobid(d)
 
         sacct_elapsed = sacct_cpu = sacct_rss = None
+        cpu_eff = None
+
         if not args.no_sacct and jobid is not None:
             sacct_elapsed, sacct_cpu, sacct_rss = safe_sacct(jobid, taskid)
+
+            # CPU efficiency (%) = cpu / (elapsed * cores) * 100
+            if (
+                sacct_elapsed is not None
+                and sacct_cpu is not None
+                and sacct_elapsed > 0
+                and total_cores > 0
+            ):
+                cpu_eff = (sacct_cpu / (sacct_elapsed * total_cores)) * 100.0
 
         rows.append({
             "directory": d.name,
@@ -510,14 +611,19 @@ def run():
             "sacct_elapsed_s": sacct_elapsed,
             "sacct_cpu_s": sacct_cpu,
             "sacct_rss_gb": sacct_rss,
+            "cpu_eff_pct": cpu_eff,
+            "speedup": None,  # optional per-point speedup (not used in best-only subplot)
         })
 
     out_dir.mkdir(parents=True, exist_ok=True)
     write_csv(rows, out_csv)
     write_skipped(skipped, skipped_txt)
 
-    # Plotly-only outputs (no matplotlib pngs)
     if rows:
+        # NEW: big plot uses only the fastest per total cores
+        make_big_summary_subplot_fastest(rows, out_dir)
+
+        # Existing plots still show all configs (useful for MPI/OMP tuning)
         make_plotly_plots(rows, out_dir)
 
     print("\nReport complete.")
@@ -526,4 +632,4 @@ def run():
     print(f"  CSV:   {out_csv}")
     print(f"  Skipped list: {skipped_txt}")
     print(f"  HTML plots directory: {out_dir}")
-    print("  Open the .html files in a browser (or via OOD file browser).")
+    print("  Open summary_2x2_best_per_total_cores.html for the best-per-cores summary.")
