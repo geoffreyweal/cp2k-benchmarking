@@ -113,8 +113,6 @@ def parse_sacct_data(data):
       * elapsed time (s)
       * total CPU time (s)
       * maximum RSS (GB)
-
-    Uses your intended structure, with guards for site/version differences.
     """
     jobs = data.get("jobs", [])
     if not jobs:
@@ -442,6 +440,9 @@ def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
       - theoretical overlays:
           * time_ideal(p) = T1 / p
           * speedup_ideal(p) = p (y=x)
+    Important:
+      - theoretical overlay traces never get error bars
+      - error-bar toggle affects only point traces
     """
     try:
         import plotly.graph_objects as go
@@ -501,6 +502,9 @@ def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
         horizontal_spacing=0.08,
     )
 
+    # Only these traces will be toggled for error bars
+    point_trace_indices: list[int] = []
+
     def add_best_metric(row, col, key, ytitle, std_key=None, show_colorbar=False, y_range=None):
         pts = [r for r in best_rows if r.get(key) is not None]
         if not pts:
@@ -554,22 +558,24 @@ def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
             col=col,
         )
 
+        point_trace_indices.append(len(fig.data) - 1)
+
         fig.update_xaxes(title_text="Total cores", row=row, col=col)
         fig.update_yaxes(title_text=ytitle, row=row, col=col)
         if y_range is not None:
             fig.update_yaxes(range=y_range, row=row, col=col)
 
-    # Points for four panels
+    # Points
     add_best_metric(1, 1, "cpu_eff_pct", "CPU efficiency (%)", std_key=None, show_colorbar=True, y_range=[0, 100])
     add_best_metric(1, 2, "sacct_rss_gb", "Max RSS (GB)", std_key=None)
     add_best_metric(2, 1, "avg_used_time_s", "Average UsedTime (s)", std_key="avg_used_time_std_s")
     add_best_metric(2, 2, "speedup_best", "Speedup (T1/Tp)", std_key="speedup_best_std")
 
-    # Theoretical overlays (dashed black)
+    # Theoretical overlays (NO error bars)
     if base_time is not None and base_time > 0:
         xs = sorted({r["total_cores"] for r in best_rows})
         if xs:
-            # Time ideal = T1 / p
+            # Ideal time = T1 / p
             y_time_ideal = [base_time / x for x in xs]
             fig.add_trace(
                 go.Scatter(
@@ -585,7 +591,7 @@ def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
                 col=1,
             )
 
-            # Speedup ideal = y = x
+            # Ideal speedup = y = x
             fig.add_trace(
                 go.Scatter(
                     x=xs,
@@ -600,8 +606,7 @@ def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
                 col=2,
             )
 
-    # Error bar toggle buttons (default OFF)
-    ntraces = len(fig.data)
+    # Error bar toggle — applies ONLY to point traces, never to theoretical lines
     fig.update_layout(
         updatemenus=[
             dict(
@@ -615,12 +620,12 @@ def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
                     dict(
                         label="Error bars: OFF",
                         method="restyle",
-                        args=[{"error_y.visible": [False] * ntraces}],
+                        args=[{"error_y.visible": False}, point_trace_indices],
                     ),
                     dict(
                         label="Error bars: ON",
                         method="restyle",
-                        args=[{"error_y.visible": [True] * ntraces}],
+                        args=[{"error_y.visible": True}, point_trace_indices],
                     ),
                 ],
             )
@@ -701,7 +706,11 @@ def run():
         # Only include runs with valid ener stats
         stats = parse_nvt_ener_stats(ener_path)
         if stats is None:
-            reason = f"missing {args.ener_file}" if not ener_path.is_file() else f"no usable UsedTime rows in {args.ener_file}"
+            reason = (
+                f"missing {args.ener_file}"
+                if not ener_path.is_file()
+                else f"no usable UsedTime rows in {args.ener_file}"
+            )
             skipped.append((d.name, reason))
             continue
 
@@ -719,7 +728,12 @@ def run():
 
         if not args.no_sacct and jobid is not None:
             sacct_elapsed, sacct_cpu, sacct_rss = safe_sacct(jobid, taskid)
-            if sacct_elapsed is not None and sacct_cpu is not None and sacct_elapsed > 0 and total_cores > 0:
+            if (
+                sacct_elapsed is not None
+                and sacct_cpu is not None
+                and sacct_elapsed > 0
+                and total_cores > 0
+            ):
                 cpu_eff = (sacct_cpu / (sacct_elapsed * total_cores)) * 100.0
 
         rows.append({
@@ -739,8 +753,12 @@ def run():
         })
 
     # Per-row speedup baseline: fastest 1-core mean time among ALL rows
-    baseline_candidates = [r for r in rows if r["total_cores"] == 1 and r.get("avg_used_time_s") is not None]
+    baseline_candidates = [
+        r for r in rows
+        if r["total_cores"] == 1 and r.get("avg_used_time_s") is not None
+    ]
     baseline_time = min((r["avg_used_time_s"] for r in baseline_candidates), default=None)
+
     if baseline_time is not None and baseline_time > 0:
         for r in rows:
             t = r.get("avg_used_time_s")
