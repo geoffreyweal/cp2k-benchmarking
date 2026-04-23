@@ -49,11 +49,13 @@ def parse_nvt_ener_avg_used_time(path: Path) -> float | None:
             if len(parts) < 2:
                 continue
 
+            # Step number is first column
             try:
                 step = int(parts[0])
             except ValueError:
                 continue
 
+            # UsedTime[s] is last column
             try:
                 used_time = float(parts[-1])
             except ValueError:
@@ -71,13 +73,15 @@ def parse_nvt_ener_avg_used_time(path: Path) -> float | None:
 
 
 # ------------------------------------------------------------
-# SLURM sacct helpers
+# SLURM sacct helpers (based on your algorithm, guarded)
 # ------------------------------------------------------------
 
 def run_sacct(jobid: str, taskid: str | None = None):
     """
     Run `sacct --json` for a job id (and optional task id).
     If taskid is supplied, query jobid_taskid, else query jobid.
+
+    Returns parsed JSON (dict).
     """
     job_query = f"{jobid}_{taskid}" if taskid is not None else f"{jobid}"
 
@@ -227,7 +231,6 @@ def _nearest_grid_surface(x, y, z, nx=35, ny=35):
 def make_plotly_plots(rows: list[dict], out_dir: Path):
     """
     3D + 2D interactive plots for ALL valid configurations.
-    (This is unchanged behavior.)
     """
     try:
         import plotly.graph_objects as go
@@ -292,6 +295,7 @@ def make_plotly_plots(rows: list[dict], out_dir: Path):
             margin=dict(l=0, r=0, b=0, t=60),
         )
 
+        # Optional surface-like overlay
         if len(pts) >= 6:
             try:
                 X, Y, Z = _nearest_grid_surface(x, y, z, nx=35, ny=35)
@@ -313,6 +317,7 @@ def make_plotly_plots(rows: list[dict], out_dir: Path):
 
     # ---------- 2D plots with toggles + dropdown ----------
     unique_cores = sorted({r["total_cores"] for r in rows})
+
     for key, label in metrics:
         pts = [r for r in rows if r.get(key) is not None]
         if not pts:
@@ -390,10 +395,14 @@ def make_plotly_plots(rows: list[dict], out_dir: Path):
         print(f"  wrote {out_html}")
 
 
-def select_fastest_per_total_cores(rows: list[dict]) -> list[dict]:
+# ------------------------------------------------------------
+# Best-per-total-cores 2x2 summary subplot
+# ------------------------------------------------------------
+
+def select_fastest_per_total_cores(rows: list[dict]) -> list:
     """
     For each total_cores, select the row with the smallest avg_used_time_s.
-    Returns a new list with 1 row per total_cores.
+    Returns a new list with 1 row per total_cores (sorted by total_cores).
     """
     best = {}
     for r in rows:
@@ -408,8 +417,8 @@ def select_fastest_per_total_cores(rows: list[dict]) -> list[dict]:
 
 def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
     """
-    Big 2x2 subplot figure, but ONLY using the fastest configuration
-    for each total_cores.
+    Big 2x2 subplot figure, ONLY using the fastest configuration
+    for each total_cores (fastest = min avg_used_time_s).
     """
     try:
         import plotly.graph_objects as go
@@ -422,8 +431,11 @@ def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
 
     best_rows = select_fastest_per_total_cores(rows)
 
-    # Speedup baseline: fastest at 1 core (must exist to compute speedup)
-    baseline_candidates = [r for r in best_rows if r["total_cores"] == 1 and r.get("avg_used_time_s") is not None]
+    # Speedup baseline: fastest at 1 core
+    baseline_candidates = [
+        r for r in best_rows
+        if r["total_cores"] == 1 and r.get("avg_used_time_s") is not None
+    ]
     baseline_time = min((r["avg_used_time_s"] for r in baseline_candidates), default=None)
 
     for r in best_rows:
@@ -433,6 +445,7 @@ def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
         else:
             r["speedup_best"] = None
 
+    # Increased spacing to prevent overlap of labels/titles
     fig = make_subplots(
         rows=2,
         cols=2,
@@ -441,14 +454,16 @@ def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
             [{"type": "xy"}, {"type": "xy"}],
         ],
         subplot_titles=[
-            "CPU efficiency (%) (best per cores)", "Max RSS (GB) (best per cores)",
-            "Average UsedTime (s) (best per cores)", "Speedup T1/Tp (best per cores)",
+            "CPU efficiency (%) (best per total cores)",
+            "Max RSS (GB) (best per total cores)",
+            "Average UsedTime (s) (best per total cores)",
+            "Speedup T1/Tp (best per total cores)",
         ],
-        vertical_spacing=0.06,
-        horizontal_spacing=0.06,
+        vertical_spacing=0.12,
+        horizontal_spacing=0.08,
     )
 
-    def add_best_metric(row, col, key, ytitle, show_colorbar=False):
+    def add_best_metric(row, col, key, ytitle, show_colorbar=False, y_range=None):
         pts = [r for r in best_rows if r.get(key) is not None]
         if not pts:
             return
@@ -468,6 +483,7 @@ def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
         if show_colorbar:
             marker["colorbar"] = dict(title="MPI ranks")
 
+        # Short hover: remove the long ytitle/value line (as requested)
         fig.add_trace(
             go.Scatter(
                 x=x,
@@ -480,8 +496,7 @@ def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
                     "Dir: %{text}<br>"
                     "Total cores: %{x}<br>"
                     "MPI: %{customdata[0]}<br>"
-                    "OpenMP threads: %{customdata[1]}<br>"
-                    f"{ytitle}: %{y}<extra></extra>"
+                    "OpenMP threads: %{customdata[1]}<extra></extra>"
                 ),
                 showlegend=False,
             ),
@@ -492,15 +507,19 @@ def make_big_summary_subplot_fastest(rows: list[dict], out_dir: Path):
         fig.update_xaxes(title_text="Total cores", row=row, col=col)
         fig.update_yaxes(title_text=ytitle, row=row, col=col)
 
-    add_best_metric(1, 1, "cpu_eff_pct", "CPU efficiency (%)", show_colorbar=True)
+        if y_range is not None:
+            fig.update_yaxes(range=y_range, row=row, col=col)
+
+    # Clamp CPU efficiency y-axis to 0..100
+    add_best_metric(1, 1, "cpu_eff_pct", "CPU efficiency (%)", show_colorbar=True, y_range=[0, 100])
     add_best_metric(1, 2, "sacct_rss_gb", "Max RSS (GB)")
     add_best_metric(2, 1, "avg_used_time_s", "Average UsedTime (s)")
     add_best_metric(2, 2, "speedup_best", "Speedup (T1/Tp)")
 
     fig.update_layout(
         title="CP2K Benchmark Summary (FASTEST per total cores)",
-        height=900,
-        margin=dict(l=70, r=40, t=90, b=60),
+        height=950,
+        margin=dict(l=70, r=40, t=120, b=70),
     )
 
     out_html = out_dir / "summary_2x2_best_per_total_cores.html"
@@ -547,13 +566,13 @@ def run():
     if not root.is_dir():
         raise RuntimeError(f"Benchmark root not found: {root}")
 
+    # Find matching benchmark directories
     sim_dirs = []
     for p in root.iterdir():
         if p.is_dir() and DIR_RE.match(p.name):
             sim_dirs.append(p)
 
     sim_dirs = sorted(sim_dirs, key=lambda p: p.name)
-
     if not sim_dirs:
         print(f"No benchmark directories found under: {root}")
         return
@@ -612,18 +631,27 @@ def run():
             "sacct_cpu_s": sacct_cpu,
             "sacct_rss_gb": sacct_rss,
             "cpu_eff_pct": cpu_eff,
-            "speedup": None,  # optional per-point speedup (not used in best-only subplot)
+            "speedup": None,  # filled below
         })
+
+    # Compute per-row speedup relative to fastest 1-core avg_used_time (if present)
+    baseline_candidates = [r for r in rows if r["total_cores"] == 1 and r.get("avg_used_time_s") is not None]
+    baseline_time = min((r["avg_used_time_s"] for r in baseline_candidates), default=None)
+    if baseline_time is not None and baseline_time > 0:
+        for r in rows:
+            t = r.get("avg_used_time_s")
+            if t is not None and t > 0:
+                r["speedup"] = baseline_time / t
 
     out_dir.mkdir(parents=True, exist_ok=True)
     write_csv(rows, out_csv)
     write_skipped(skipped, skipped_txt)
 
     if rows:
-        # NEW: big plot uses only the fastest per total cores
+        # Big plot uses ONLY fastest per total_cores
         make_big_summary_subplot_fastest(rows, out_dir)
 
-        # Existing plots still show all configs (useful for MPI/OMP tuning)
+        # These show ALL valid configs (useful for MPI/OMP tuning)
         make_plotly_plots(rows, out_dir)
 
     print("\nReport complete.")
