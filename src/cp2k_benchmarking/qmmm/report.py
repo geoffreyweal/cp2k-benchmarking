@@ -30,7 +30,10 @@ SLURM_OUT_RE = re.compile(r"^slurm_(?P<jobid>\d+)(?:_(?P<taskid>\d+))?\.out$")
 def parse_nvt_ener_avg_used_time(path: Path) -> float | None:
     """
     Parse NVT1-1.ener and return average UsedTime[s] excluding step 0.
-    Returns None if file missing or no valid rows.
+
+    Returns:
+      - float average if valid rows exist (step > 0)
+      - None if file is missing or contains no valid rows > 0
     """
     if not path.is_file():
         return None
@@ -58,6 +61,7 @@ def parse_nvt_ener_avg_used_time(path: Path) -> float | None:
             except ValueError:
                 continue
 
+            # Skip step 0 explicitly
             if step == 0:
                 continue
 
@@ -187,6 +191,16 @@ def write_csv(rows: list[dict], out_csv: Path):
         w.writeheader()
         for r in rows:
             w.writerow(r)
+
+
+def write_skipped(skipped: list[tuple[str, str]], out_path: Path):
+    """
+    Write a list of (directory_name, reason) entries.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8") as f:
+        for d, reason in skipped:
+            f.write(f"{d}\t{reason}\n")
 
 
 # ------------------------------------------------------------
@@ -433,10 +447,12 @@ def run():
     root = Path(args.root).resolve()
     out_dir = Path(args.out).resolve()
     out_csv = out_dir / "results.csv"
+    skipped_txt = out_dir / "skipped_missing_ener.txt"
 
     if not root.is_dir():
         raise RuntimeError(f"Benchmark root not found: {root}")
 
+    # Find matching benchmark directories
     sim_dirs = []
     for p in root.iterdir():
         if p.is_dir() and DIR_RE.match(p.name):
@@ -453,13 +469,29 @@ def run():
         iterator = tqdm(sim_dirs, desc="Scanning benchmark directories")
 
     rows = []
+    skipped = []
+
     for d in iterator:
+        ener_path = d / args.ener_file
+
+        # ------------------------------------------------------------
+        # NEW RULE: only include runs that have the .ener file
+        # ------------------------------------------------------------
+        if not ener_path.is_file():
+            skipped.append((d.name, f"missing {args.ener_file}"))
+            continue
+
+        avg_used_time = parse_nvt_ener_avg_used_time(ener_path)
+
+        # If file exists but contains no usable steps beyond 0, treat as failed too
+        if avg_used_time is None:
+            skipped.append((d.name, f"no usable UsedTime rows in {args.ener_file}"))
+            continue
+
         m = DIR_RE.match(d.name)
         total_cores = int(m.group("cores"))
         mpi_ranks = int(m.group("mpi"))
         omp_threads = int(m.group("omp"))
-
-        avg_used_time = parse_nvt_ener_avg_used_time(d / args.ener_file)
 
         jobid, taskid = find_slurm_out_jobid(d)
 
@@ -482,11 +514,16 @@ def run():
 
     out_dir.mkdir(parents=True, exist_ok=True)
     write_csv(rows, out_csv)
+    write_skipped(skipped, skipped_txt)
 
     # Plotly-only outputs (no matplotlib pngs)
-    make_plotly_plots(rows, out_dir)
+    if rows:
+        make_plotly_plots(rows, out_dir)
 
     print("\nReport complete.")
+    print(f"  Included runs (ener present): {len(rows)}")
+    print(f"  Skipped runs (ener missing/invalid): {len(skipped)}")
     print(f"  CSV:   {out_csv}")
+    print(f"  Skipped list: {skipped_txt}")
     print(f"  HTML plots directory: {out_dir}")
     print("  Open the .html files in a browser (or via OOD file browser).")
