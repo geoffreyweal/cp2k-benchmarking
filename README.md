@@ -256,13 +256,127 @@ Total requested walltime: 6d 02:30:00 (529,200 seconds)
 
 ---
 
-## Design Principles
+Reporting and Analysis (cp2k-benchmarking qmmm report)
 
-- Filesystem is the source of truth
-- No hidden state or databases
-- Deterministic resource requests
-- HPC-friendly, admin-transparent behavior
-- Easy post-processing and reporting
+The `report` subcommand analyses completed CP2K benchmark runs and produces interactive, publication-quality performance summaries. It is designed to work directly on the directory structure created by `qmmm setup` and intentionally ignores failed or incomplete runs.
+
+Command:
+  cp2k-benchmarking qmmm report
+
+---
+
+WHAT THE REPORT DOES
+
+1. Scan benchmark directories
+   - Searches under CP2K_Benchmarking/ (or --root PATH)
+   - Only directories matching:
+       <TOTAL>_Cores_<MPI>_MPI_<OMP>_OpenMPI
+
+2. Filter out failed runs (strict)
+   - A run is valid only if NVT1-1.ener exists
+   - Must contain at least one timestep after step 0
+   - Invalid runs are excluded entirely
+   - Excluded runs are written to:
+       report/skipped_missing_ener.txt
+
+3. Extract CP2K timing statistics (from NVT1-1.ener)
+   - Average UsedTime[s] (excluding step 0)
+   - Standard deviation of UsedTime[s]
+
+4. Extract SLURM accounting data (optional)
+   - Uses: sacct --json
+   - Job ID inferred from slurm_*.out
+   - Extracted:
+       * elapsed wall time (s)
+       * total CPU time (s)
+       * max RSS (GB)
+   - Disable with: --no-sacct
+
+5. Compute derived metrics
+   - CPU efficiency (%):
+       cpu_time / (elapsed_time * total_cores) * 100
+   - Speedup:
+       T1 / Tp
+     where T1 is the fastest valid 1-core run
+
+6. Write machine-readable output
+   - report/results.csv
+
+---
+
+INTERACTIVE OUTPUTS (HTML)
+
+All plots are self-contained HTML files.
+
+1. Big 2x2 summary plot (best-per-cores)
+   File:
+     report/summary_2x2_best_per_total_cores.html
+
+   Shows only the fastest configuration for each total core count.
+
+   Panels:
+     - CPU efficiency (%) [0-100]
+     - Max RSS (GB)
+     - Average UsedTime (s)
+     - Speedup (T1/Tp)
+
+   Features:
+     - Hover shows directory, cores, MPI, OpenMP, value, stddev
+     - Error bars (±1σ) toggle (OFF by default)
+     - Theoretical reference lines:
+         * Time: T1 / cores
+         * Speedup: y = x
+       (theoretical lines never show error bars)
+
+2. 3D plots (MPI x OpenMP x metric)
+   Files:
+     report/plot3d_<metric>.html
+
+   Axes:
+     X: MPI ranks
+     Y: OpenMP threads
+     Z: metric value
+
+3. 2D plots (all configurations)
+   Files:
+     report/plot2d_<metric>_by_total_cores.html
+        
+   Features:
+     - X axis: total cores
+     - One trace per core count
+     - Legend toggles
+     - Dropdown filter for cores >= threshold
+
+---
+
+COMMAND-LINE OPTIONS
+
+  --root PATH      Root benchmarking directory (default: CP2K_Benchmarking)
+  --ener-file FILE Energy file to parse (default: NVT1-1.ener)
+  --out DIR        Output directory (default: report)
+  --no-sacct       Skip SLURM accounting queries
+
+---
+
+TYPICAL WORKFLOW
+
+  cp2k-benchmarking qmmm setup ...
+  cp2k-benchmarking submit
+  cp2k-benchmarking qmmm report
+
+  Open report/summary_2x2_best_per_total_cores.html in a browser
+
+---
+
+DESIGN PHILOSOPHY
+
+- Strict: failed runs excluded
+- Reproducible: derived from files on disk
+- Transparent: CSV always written
+- Interactive: hover, toggles, filtering
+
+Suitable for scaling studies, MPI/OpenMP tuning, regression testing, and HPC documentation.
+
 
 ---
 
